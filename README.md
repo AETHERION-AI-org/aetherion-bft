@@ -55,9 +55,9 @@
 | :-- | :-- |
 | **Network** | Aetherion Network |
 | **Chain ID** | `100892` |
-| **Native currency** | `AETH` — 18 decimals |
+| **Native currency** | `AETH` (18 decimals) |
 | **Consensus** | AETHERION BFT |
-| **Total supply** | `21,000,000 AETH` — fixed at genesis |
+| **Total supply** | `21,000,000 AETH`, fixed at genesis |
 | **Epoch length** | `300` blocks · ~10 minutes |
 | **Emission** | `50 AETH` / epoch, halving every `210,240` epochs (~4 years) |
 | **Public RPC** | <https://rpc.aetherion-ai.org> |
@@ -239,7 +239,7 @@ The per-epoch reward can only ever shrink. It is arithmetic, not a decision.
 
 ## 🔒 Security
 
-Found a vulnerability? Please report it responsibly — see [`SECURITY.md`](./SECURITY.md).
+Found a vulnerability? Please report it responsibly: see [`SECURITY.md`](./SECURITY.md).
 Do **not** open a public issue for security-sensitive reports.
 
 <br>
