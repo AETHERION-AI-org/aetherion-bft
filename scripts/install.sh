@@ -62,9 +62,16 @@ warn() { printf '  %s!%s %s\n' "$YELLOW" "$R" "$1"; }
 die()  { printf '\n  %s✗ %s%s\n\n' "$RED" "$1" "$R" >&2; exit 1; }
 kv()   { printf '  %s%-22s%s %s\n' "$GREY" "$1" "$R" "$2"; }
 
+# These run under `set -e`, so both must end on a zero status no matter where their
+# output is going. A trailing `[ -t 1 ] && ...` returns 1 when stdout is a file or a
+# pipe, which is enough to kill the installer mid-step without printing a thing.
 spin_pid=""
 spin_start() {
-  [ -t 1 ] || { printf '  %s\n' "$1"; return; }
+  if [ ! -t 1 ]; then
+    printf '  %s\n' "$1"
+
+    return 0
+  fi
   local msg="$1"
   ( local f='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
     while :; do
@@ -73,11 +80,15 @@ spin_start() {
       sleep 0.1
     done ) & spin_pid=$!
   disown 2>/dev/null || true
+
+  return 0
 }
 spin_stop() {
-  [ -n "$spin_pid" ] && kill "$spin_pid" 2>/dev/null || true
+  [ -n "$spin_pid" ] && kill "$spin_pid" 2>/dev/null
   spin_pid=""
   [ -t 1 ] && printf '\r\033[K'
+
+  return 0
 }
 
 # Unattended mode. A human gets the prompts; automation answers them up front through
@@ -239,7 +250,11 @@ generate_keys() {
   [ -n "$OPERATOR" ] || die "Could not read the operator address from secrets output"
 
   kv "Operator address" "$B$OPERATOR$R"
-  [ -n "$NODE_ID" ] && kv "Node ID" "$NODE_ID"
+  # Not `[ -n "$NODE_ID" ] && kv ...`: as the last line of a function that returns 1
+  # when the id is missing, which under `set -e` would kill the install right here.
+  if [ -n "$NODE_ID" ]; then
+    kv "Node ID" "$NODE_ID"
+  fi
 }
 
 BACKUP_SRV_PID=""
