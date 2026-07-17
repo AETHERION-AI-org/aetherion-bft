@@ -338,58 +338,87 @@ preflight() {
 tune_host() {
   step "Host tuning"
 
-  # Logs. Watched on our own node: journald reached 3.9 GB with no ceiling, on the machine
-  # that also produced blocks. A full disk stops block production, and this is the quietest
-  # way to reach one.
+  local ram_mb disk_gb
+  ram_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+  disk_gb=$(df -Pk /opt 2>/dev/null | awk 'NR==2{print int($2/1048576)}' || echo 40)
+  info "This machine: ${ram_mb} MB RAM, ${disk_gb} GB disk"
+
+  # Logs. Not theoretical: journald reached 3.9 GB on a node that was also producing
+  # blocks. A full disk stops block production, and this is the quietest way to reach one.
+  # 100M is plenty to debug a crash and nothing on even a small disk.
   mkdir -p /etc/systemd/journald.conf.d
   cat > /etc/systemd/journald.conf.d/aetherion.conf <<'EOF'
 [Journal]
-SystemMaxUse=1G
-SystemKeepFree=5G
-MaxRetentionSec=1month
+SystemMaxUse=100M
+SystemKeepFree=1G
+MaxRetentionSec=1week
 EOF
   systemctl restart systemd-journald 2>/dev/null || true
-  ok "Logs capped at 1G, always leaving 5G free"
+  ok "Logs capped at 100M, always leaving 1G free"
 
-  # Kernel. libp2p keeps many concurrent connections and the chain DB keeps many files
-  # open; the defaults assume neither.
-  cat > /etc/sysctl.d/99-aetherion.conf <<'EOF'
-# Peer connections arrive in bursts, especially at startup while dialing the network.
+  # Socket buffers are per-connection, so they multiply by peer count. 16 MB is right on a
+  # big host and is how you OOM a small one: at 40 peers it reserves more memory than the
+  # whole machine has. Scale them to the box instead of assuming the box.
+  local rmax wmax peers
+  if   [ "$ram_mb" -ge 7000 ]; then rmax=16777216; wmax=16777216; peers=40
+  elif [ "$ram_mb" -ge 3000 ]; then rmax=8388608;  wmax=8388608;  peers=30
+  elif [ "$ram_mb" -ge 1500 ]; then rmax=4194304;  wmax=4194304;  peers=20
+  else                              rmax=2097152;  wmax=2097152;  peers=12
+  fi
+  MAX_PEERS="$peers"
+
+  cat > /etc/sysctl.d/99-aetherion.conf <<EOF
+# Peers arrive in bursts, especially at startup while dialing the whole network.
 net.core.somaxconn = 4096
 net.ipv4.tcp_max_syn_backlog = 4096
 
-# Block gossip is bursty and latency-sensitive; the default socket buffers are sized for
-# neither.
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.ipv4.tcp_rmem = 4096 87380 16777216
-net.ipv4.tcp_wmem = 4096 65536 16777216
+# Sized for this machine: these buffers are per-socket and multiply by peer count.
+net.core.rmem_max = $rmax
+net.core.wmem_max = $wmax
+net.ipv4.tcp_rmem = 4096 87380 $rmax
+net.ipv4.tcp_wmem = 4096 65536 $wmax
 
 # Peers come and go constantly, leaving sockets in TIME_WAIT.
 net.ipv4.tcp_fin_timeout = 20
 net.ipv4.tcp_tw_reuse = 1
 
 # The chain DB wants to stay in page cache. Swapping it out turns block import into disk
-# thrashing, and a validator that cannot import cannot sign.
+# thrashing, and a validator that cannot import cannot sign. Low, but not zero: on a small
+# box swap is what stands between a memory spike and the OOM killer.
 vm.swappiness = 10
+vm.vfs_cache_pressure = 50
 
-# The DB holds a lot of small files open at once.
-fs.file-max = 2097152
+fs.file-max = 1048576
 EOF
   sysctl --system >/dev/null 2>&1 || true
-  ok "Kernel tuned for a gossiping database"
+  ok "Kernel tuned for ${ram_mb} MB: $((rmax / 1048576))MB socket buffers, up to ${peers} peers"
 
-  # Time. Consensus is timestamped; a node whose clock drifts produces blocks its peers
-  # may refuse.
+  # Swap. A small box with none is one memory spike away from having the node killed, and
+  # the node is the largest process on it by design.
+  if [ "$ram_mb" -lt 3000 ] && [ "$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)" -eq 0 ]; then
+    if fallocate -l 2G /swapfile 2>/dev/null && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile 2>/dev/null; then
+      grep -q '^/swapfile' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      ok "Added 2G of swap (this machine had none)"
+    else
+      rm -f /swapfile
+      warn "No swap and could not create any. A memory spike will kill the node."
+    fi
+  fi
+
+  # Consensus is timestamped. A drifting clock produces blocks peers may refuse.
   if command -v timedatectl >/dev/null; then
     timedatectl set-ntp true 2>/dev/null || true
-    local synced
-    synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo "")
-    if [ "$synced" = "yes" ]; then
-      ok "Clock synchronised"
-    else
-      warn "Clock is not NTP-synchronised yet. Consensus is timestamped: fix this."
-    fi
+    [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ] \
+      && ok "Clock synchronised" \
+      || warn "Clock is not NTP-synchronised. Consensus is timestamped: fix this."
+  fi
+
+  # Say the uncomfortable thing plainly rather than letting it fail at 3am.
+  if [ "$ram_mb" -lt 1800 ]; then
+    warn "${ram_mb} MB RAM is below what this node needs under load. Expect it to be killed."
+  fi
+  if [ "$disk_gb" -lt 25 ]; then
+    warn "${disk_gb} GB disk. The chain is already ~2 GB and only grows: this will run out."
   fi
 
   return 0
@@ -991,7 +1020,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=$BIN server --data-dir $DATA_DIR --chain $HOME_DIR/genesis.json \\
   --libp2p 0.0.0.0:1478 --jsonrpc 0.0.0.0:8545 --grpc-address 127.0.0.1:9632 \\
-  --json-rpc-batch-request-limit 1000$seal_flag --log-level INFO
+  --json-rpc-batch-request-limit 1000 --max-peers ${MAX_PEERS:-40}$seal_flag --log-level INFO
 Restart=always
 RestartSec=5
 
