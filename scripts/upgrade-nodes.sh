@@ -87,16 +87,29 @@ node_bin() {  # which path this node's binary lives at
   fi
 }
 
+# Every pattern here is bracketed ("[s]erver"), and that is not a style choice. pgrep -f
+# and pkill -f match against full command lines, and the ssh command running them contains
+# the pattern itself. Unbracketed, the wait loop matches its own wrapper and concludes the
+# node never died, and then `pkill -9` kills the ssh session instead of the node. Verified
+# on a live host: the plain pattern returns 3 matches, one node and two wrappers; the
+# bracketed one returns exactly the node.
 stop_node() {  # stop_node <ip> <mode>
   local ip="$1" mode="$2"
   if [ "$mode" = "systemd" ]; then
     ssh $SSH_OPTS "root@$ip" 'systemctl stop aetherion-node 2>/dev/null || true' || true
   else
-    ssh $SSH_OPTS "root@$ip" 'pkill -f "polygon-edge server" 2>/dev/null || true' || true
+    ssh $SSH_OPTS "root@$ip" 'pkill -f "[p]olygon-edge server" 2>/dev/null || true' || true
   fi
-  ssh $SSH_OPTS "root@$ip" 'for i in $(seq 1 15); do pgrep -f "server --data-dir" >/dev/null || exit 0; sleep 1; done; exit 1' \
-    || warn "process still up after 15s; forcing"
-  ssh $SSH_OPTS "root@$ip" 'pkill -9 -f "server --data-dir" 2>/dev/null || true' || true
+
+  if ! ssh $SSH_OPTS "root@$ip" 'for i in $(seq 1 15); do pgrep -f "[s]erver --data-dir" >/dev/null || exit 0; sleep 1; done; exit 1'; then
+    warn "process still up after 15s; forcing"
+    ssh $SSH_OPTS "root@$ip" 'pkill -9 -f "[s]erver --data-dir" 2>/dev/null || true' || true
+    sleep 3
+  fi
+
+  # Refuse to swap a binary out from under a live process.
+  ssh $SSH_OPTS "root@$ip" 'pgrep -f "[s]erver --data-dir" >/dev/null && exit 1 || exit 0' \
+    || die "node at $ip would not stop. Refusing to replace a running binary."
 }
 
 start_node() {  # start_node <ip> <mode> <datadir>
@@ -105,7 +118,8 @@ start_node() {  # start_node <ip> <mode> <datadir>
     ssh $SSH_OPTS "root@$ip" 'systemctl start aetherion-node'
   else
     # node2 predates the installer and runs from a raw setsid, not a unit.
-    ssh $SSH_OPTS "root@$ip" "cd $(dirname "$dir") && setsid $BIN_PATH server \
+    local bin; bin=$(node_bin "$ip")
+    ssh $SSH_OPTS "root@$ip" "cd $(dirname "$dir") && setsid $bin server \
       --data-dir $dir --chain $dir/genesis.json \
       --grpc-address 127.0.0.1:9632 --libp2p 0.0.0.0:1478 --jsonrpc 127.0.0.1:8545 \
       --seal --log-level INFO >$(dirname "$dir")/node.log 2>&1 </dev/null & echo started"
