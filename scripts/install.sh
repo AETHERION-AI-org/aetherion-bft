@@ -29,12 +29,41 @@ SERVICE="aetherion-node"
 # ---------------------------------------------------------------------------
 # presentation
 # ---------------------------------------------------------------------------
+# The Aetherion palette, straight from the design system (frontend/app/globals.css):
+#
+#   accent        #2D7DFF   primary royal blue   headings, structure
+#   accent-soft   #6EA8FF   secondary blue       prompts, spinners, cautions
+#   check-cyan    #2FF2E8   checks and status    the tick, and nothing else
+#   success       #34D399   confirmed good       completion lines
+#   crimson       #D84C4C   danger               failures only
+#   text-primary  #EAF0F8   foreground
+#   text-muted    #8A93A6   secondary text
+#
+# check-cyan is reserved for status marks by the design system, so it is worn by the
+# tick alone. There is no amber in the palette and none is invented here: a caution is
+# accent-soft carrying a "!", told apart by its glyph rather than by a colour that does
+# not belong to the brand.
+#
+# Truecolor where the terminal has it, the nearest xterm-256 step where it does not,
+# and nothing at all when output is not a terminal, so piping to a log stays readable.
 if [ -t 1 ] && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   B=$'\033[1m'; D=$'\033[2m'; R=$'\033[0m'
-  BLUE=$'\033[38;5;39m'; CYAN=$'\033[38;5;51m'; GREEN=$'\033[38;5;42m'
-  RED=$'\033[38;5;203m'; YELLOW=$'\033[38;5;221m'; GREY=$'\033[38;5;245m'
+  case "${COLORTERM:-}" in
+    truecolor|24bit)
+      BLUE=$'\033[38;2;45;125;255m'    # accent
+      SOFT=$'\033[38;2;110;168;255m'   # accent-soft
+      CYAN=$'\033[38;2;47;242;232m'    # check-cyan
+      GREEN=$'\033[38;2;52;211;153m'   # success
+      RED=$'\033[38;2;216;76;76m'      # oracle-crimson
+      GREY=$'\033[38;2;138;147;166m'   # text-muted
+      ;;
+    *)
+      BLUE=$'\033[38;5;33m'; SOFT=$'\033[38;5;75m'; CYAN=$'\033[38;5;51m'
+      GREEN=$'\033[38;5;79m'; RED=$'\033[38;5;167m'; GREY=$'\033[38;5;246m'
+      ;;
+  esac
 else
-  B=""; D=""; R=""; BLUE=""; CYAN=""; GREEN=""; RED=""; YELLOW=""; GREY=""
+  B=""; D=""; R=""; BLUE=""; SOFT=""; CYAN=""; GREEN=""; RED=""; GREY=""
 fi
 
 banner() {
@@ -49,14 +78,14 @@ banner() {
   ##     ## ########    ##    ##     ## ######## ##     ## ####  #######  ##    ##
 ART
   printf '%s' "$R"
-  printf '%s                    B  F  T     C  O  N  S  E  N  S  U  S     N  O  D  E%s\n\n' "$D$CYAN" "$R"
+  printf '%s                    B  F  T     C  O  N  S  E  N  S  U  S     N  O  D  E%s\n\n' "$D$SOFT" "$R"
 }
 
 hr()   { printf '%s%s%s\n' "$D$GREY" "$(printf '─%.0s' $(seq 1 72))" "$R"; }
 step() { printf '\n%s%s▸ %s%s\n' "$B" "$BLUE" "$1" "$R"; }
-ok()   { printf '  %s✓%s %s\n' "$GREEN" "$R" "$1"; }
+ok()   { printf '  %s✓%s %s\n' "$CYAN" "$R" "$1"; }
 info() { printf '  %s·%s %s\n' "$GREY" "$R" "$1"; }
-warn() { printf '  %s!%s %s\n' "$YELLOW" "$R" "$1"; }
+warn() { printf '  %s!%s %s\n' "$SOFT" "$R" "$1"; }
 die()  { printf '\n  %s✗ %s%s\n\n' "$RED" "$1" "$R" >&2; exit 1; }
 kv()   { printf '  %s%-22s%s %s\n' "$GREY" "$1" "$R" "$2"; }
 
@@ -74,7 +103,7 @@ spin_start() {
   ( local f='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
     while :; do
       i=$(( (i+1) % 10 ))
-      printf '\r  %s%s%s %s' "$CYAN" "${f:$i:1}" "$R" "$msg"
+      printf '\r  %s%s%s %s' "$SOFT" "${f:$i:1}" "$R" "$msg"
       sleep 0.1
     done ) & spin_pid=$!
   disown 2>/dev/null || true
@@ -107,13 +136,36 @@ ask() {  # ask <prompt> <default>
   # The answer is this function's stdout, so anything shown to the operator goes to
   # stderr. (`read -p` already does this, which is why only this branch says so.)
   if [ -n "$UNATTENDED" ]; then
-    printf '  %s?%s %s %s[%s]%s\n' "$CYAN" "$R" "$1" "$D" "$2" "$R" >&2
+    printf '  %s?%s %s %s[%s]%s\n' "$SOFT" "$R" "$1" "$D" "$2" "$R" >&2
     echo "$2"
 
     return
   fi
-  read -r -p "  ${CYAN}?${R} $1 ${D}[$2]${R} " ans </dev/tty || ans=""
+  read -r -p "  ${SOFT}?${R} $1 ${D}[$2]${R} " ans </dev/tty || ans=""
   echo "${ans:-$2}"
+}
+
+# ---------------------------------------------------------------------------
+# resumable state
+# ---------------------------------------------------------------------------
+# Bringing a validator up takes hours, nearly all of it syncing, so an interrupted run
+# is the normal case and not an edge case: a dropped connection, a reboot, an impatient
+# ^C. Re-running the same one-liner resumes rather than restarts. Each step records
+# itself once it has genuinely finished, and steps that have already happened are
+# skipped instead of repeated.
+#
+# The state file is a convenience, never the authority. Anything that costs money or
+# touches the chain re-checks the chain itself before acting, because a stale local file
+# must never be able to cause a second payment.
+STATE_FILE="$HOME_DIR/.install-state"
+
+mark_done() {
+  mkdir -p "$HOME_DIR"
+  grep -qxF "$1" "$STATE_FILE" 2>/dev/null || echo "$1" >> "$STATE_FILE"
+}
+
+is_done() {
+  grep -qxF "$1" "$STATE_FILE" 2>/dev/null
 }
 
 cleanup() { spin_stop; stop_backup_server; }
@@ -275,6 +327,13 @@ stop_backup_server() {
 }
 
 backup_keys() {
+  if is_done "backup" && [ -z "${AETH_FORCE_BACKUP:-}" ]; then
+    step "Key backup"
+    ok "Already backed up on an earlier run"
+    info "Archive: $HOME_DIR/backups/ (re-run with AETH_FORCE_BACKUP=1 to make a new one)"
+
+    return 0
+  fi
   step "Key backup"
   cat <<EOF
 
@@ -327,6 +386,7 @@ EOF
     ok "Backup written to $HOME_DIR/backups/$name"
     kv "sha256" "$enc_hash"
     warn "Copy it off this machine. Nothing else holds these keys."
+    mark_done "backup"
 
     return
   fi
@@ -399,7 +459,7 @@ PY
 
   hr
   printf '\n  %sDownload your backup now, in a browser on your own computer:%s\n\n' "$B" "$R"
-  printf '     %s%s%s\n\n' "$CYAN$B" "$link" "$R"
+  printf '     %s%s%s\n\n' "$SOFT$B" "$link" "$R"
   printf '  %sVerify it after downloading:%s\n' "$B" "$R"
   printf '     %ssha256sum %s%s\n' "$GREY" "$name" "$R"
   printf '     %s%s%s\n\n' "$GREY" "$enc_hash" "$R"
@@ -418,6 +478,7 @@ PY
   done
 
   stop_backup_server
+  mark_done "backup"
   ok "Backup confirmed. Download server stopped and the archive wiped from this host."
 }
 
@@ -464,7 +525,7 @@ await_funding() {
 
   ${B}Fund this address to produce blocks${R}
 
-     ${CYAN}${B}${OPERATOR}${R}
+     ${SOFT}${B}${OPERATOR}${R}
 
   ${GREY}This node will lock ${B}${STAKE_AETH} AETH${R}${GREY} as stake. The deposit stays yours: it is
   locked, not spent, and can be unbonded later. Send a little extra to cover
@@ -487,7 +548,7 @@ EOF
     fi
     spin_stop
     printf '\r\033[K  %s⠿%s waiting for funds  %s%s AETH%s / %s AETH  %s(%ss)%s' \
-      "$CYAN" "$R" "$B" "$aeth" "$R" "$MIN_STAKE" "$D$GREY" "$(( $(date +%s) - start ))" "$R"
+      "$SOFT" "$R" "$B" "$aeth" "$R" "$MIN_STAKE" "$D$GREY" "$(( $(date +%s) - start ))" "$R"
     sleep 1
   done
 }
@@ -519,13 +580,27 @@ PY
 await_sync() {
   step "Waiting to catch up"
 
+  cat >&2 <<EOF
+
+  ${GREY}This takes hours: the node is replaying the whole chain. It runs as a systemd
+  service, so it keeps syncing whether or not you stay connected, and it comes
+  back by itself after a crash or a reboot.
+
+  ${B}You can close this terminal.${R}${GREY} Nothing is lost. When you want to finish up, run
+  the same install command again and it will pick up exactly where it left off.
+
+  Progress any time:  ${R}systemctl status ${SERVICE}${GREY}
+  Live logs:          ${R}journalctl -u ${SERVICE} -f${GREY}${R}
+
+EOF
+
   local local_head chain_head lag start
   start=$(date +%s)
   while :; do
     chain_head=$(rpc_head "$RPC_PUBLIC")
     local_head=$(rpc_head "http://127.0.0.1:8545")
     if [ -z "$local_head" ] || [ -z "$chain_head" ]; then
-      printf '\r\033[K  %s⠿%s waiting for the node to answer' "$CYAN" "$R"
+      printf '\r\033[K  %s⠿%s waiting for the node to answer' "$SOFT" "$R"
       sleep 5
       continue
     fi
@@ -537,10 +612,29 @@ await_sync() {
       return 0
     fi
     printf '\r\033[K  %s⠿%s syncing  %s%s%s / %s  %s(%s behind, %ss elapsed)%s' \
-      "$CYAN" "$R" "$B" "$local_head" "$R" "$chain_head" "$D$GREY" "$lag" \
+      "$SOFT" "$R" "$B" "$local_head" "$R" "$chain_head" "$D$GREY" "$lag" \
       "$(( $(date +%s) - start ))" "$R"
     sleep 10
   done
+}
+
+# current_stake_wei <address> -> the operator's locked stake, in wei, from the chain.
+# getValidator returns a tuple opening with a dynamic `bytes`, so word 0 is the offset to
+# the tuple head and `stake` is that head's second word.
+current_stake_wei() {
+  local res
+  res=$(rpc eth_call "[{\"to\":\"$REGISTRY\",\"data\":\"0x1904bb2e$(printf '%064s' "${1#0x}" | tr ' ' '0')\"},\"latest\"]" \
+        | sed -n 's/.*"result":"0x\([0-9a-fA-F]*\)".*/\1/p')
+  [ -n "$res" ] || { echo ""; return 0; }
+  python3 - "$res" <<'PY_INNER' 2>/dev/null || echo ""
+import sys
+raw = bytes.fromhex(sys.argv[1])
+if len(raw) < 32: sys.exit(1)
+base = int.from_bytes(raw[0:32], "big")
+s = base + 32
+if s + 32 > len(raw): sys.exit(1)
+print(int.from_bytes(raw[s:s+32], "big"))
+PY_INNER
 }
 
 join_validator_set() {
@@ -594,14 +688,36 @@ EOF
   await_sync
 
   step "Locking stake"
-  local amount_wei
-  amount_wei=$(python3 -c "print(int($STAKE_AETH * 10**18))")
-  spin_start "Locking $STAKE_AETH AETH as stake"
+
+  # Ask the chain, not the state file, what is already locked. A resumed run must never
+  # be able to pay twice, and only the chain knows the truth about that.
+  local target_wei have_wei need_wei
+  target_wei=$(python3 -c "print(int($STAKE_AETH * 10**18))")
+  have_wei=$(current_stake_wei "$OPERATOR")
+  if [ -z "$have_wei" ]; then
+    die "Could not read the current stake from the registry. Refusing to stake blind."
+  fi
+
+  if [ "$have_wei" != "0" ]; then
+    info "Already locked: $(python3 -c "print(f'{$have_wei/10**18:,.4f}')") AETH"
+  fi
+
+  need_wei=$(python3 -c "print(max(0, $target_wei - $have_wei))")
+  if [ "$need_wei" = "0" ]; then
+    ok "Stake already at or above $STAKE_AETH AETH, nothing to add"
+    mark_done "stake"
+    info "You join the block-producing set at the next epoch boundary (~10 minutes)."
+
+    return 0
+  fi
+
+  spin_start "Locking $(python3 -c "print(f'{$need_wei/10**18:,.4f}')") AETH as stake"
   local out
   if out=$("$BIN" validator-stake --data-dir "$DATA_DIR" --registry "$REGISTRY" \
-           --amount "$amount_wei" --jsonrpc "$RPC_PUBLIC" --insecure 2>&1); then
+           --amount "$need_wei" --jsonrpc "$RPC_PUBLIC" --insecure 2>&1); then
     spin_stop
     ok "Stake locked"
+    mark_done "stake"
     printf '%s\n' "$out" | sed -n 's/^\(Transaction\|Block\|Total stake\)/  &/p'
   else
     spin_stop
@@ -609,7 +725,7 @@ EOF
     printf '%s\n' "$out" | tail -2 | sed 's/^/    /'
     info "Retry with:"
     printf '     %s%s validator-stake --data-dir %s --registry %s --amount %s --insecure%s\n' \
-      "$GREY" "$BIN" "$DATA_DIR" "$REGISTRY" "$amount_wei" "$R"
+      "$GREY" "$BIN" "$DATA_DIR" "$REGISTRY" "$need_wei" "$R"
     return
   fi
 
