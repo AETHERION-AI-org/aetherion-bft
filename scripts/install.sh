@@ -646,13 +646,18 @@ main() {
   generate_keys
   backup_keys
 
+  # Start syncing before anything else that waits. A fresh node has the whole chain
+  # to download, and there is no reason for that to sit idle behind a funding prompt.
+  # Sealing is a no-op until the registry lists this operator as active, so a
+  # validator can safely run with --seal from the start.
+  install_service
+
   if [ "$MODE" = "validator" ]; then
     step "Funding"
     await_funding
     join_validator_set
   fi
 
-  install_service
   summary
 }
 
