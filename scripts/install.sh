@@ -524,41 +524,32 @@ Then this node locks its own stake (>= $MIN_STAKE AETH) from the operator addres
 EOF
   chmod 600 "$HOME_DIR/validator-registration.txt"
 
-  if ! is_whitelisted "$OPERATOR"; then
-    cat <<EOF
-
-  ${B}One step needs the network's governance${R}
-
-  ${GREY}An operator is admitted to the registry by governance, not by itself. Send
-  the two values below to the Aetherion team. They prove you hold the signing
-  key and reveal nothing secret, so they are safe to share in the open.${R}
-
-EOF
-    kv "Operator" "$OPERATOR"
-    printf '  %s%-22s%s %s\n' "$GREY" "BLS public key" "$R" "$bls"
-    printf '  %s%-22s%s %s\n\n' "$GREY" "Proof-of-possession" "$R" "$pop"
-    info "Also saved to $HOME_DIR/validator-registration.txt"
-
-    local a; a=$(ask "Wait here until you are admitted? (yes/no)" "yes")
-    case "${a,,}" in
-      yes|y) ;;
-      *) warn "Fine. Re-run this installer once admitted and it will pick up from here."
-         return ;;
-    esac
-
-    local waited=0
-    while ! is_whitelisted "$OPERATOR"; do
-      printf '\r\033[K  %s⠿%s waiting to be admitted to the registry  %s(%ss)%s' \
-        "$CYAN" "$R" "$D$GREY" "$waited" "$R"
-      sleep 5; waited=$((waited + 5))
-    done
-    printf '\r\033[K'
+  # Registration is permissionless: the chain checks the proof-of-possession and that
+  # the caller is the operator, and that is the whole gate. Nobody is asked, nothing is
+  # approved, and there is no queue to wait in.
+  if is_whitelisted "$OPERATOR"; then
+    ok "Already registered"
+  else
+    step "Registering on-chain"
+    spin_start "Registering (the chain verifies your proof-of-possession)"
+    local rout
+    if rout=$("$BIN" validator-register --data-dir "$DATA_DIR" --registry "$REGISTRY" \
+              --chain-id "$CHAIN_ID" --jsonrpc "$RPC_PUBLIC" --insecure 2>&1); then
+      spin_stop
+      ok "Registered"
+      printf '%s\n' "$rout" | sed -n 's/^\(Transaction\|Block\)/  &/p'
+    else
+      spin_stop
+      warn "Registration failed:"
+      printf '%s\n' "$rout" | tail -2 | sed 's/^/    /'
+      info "Your proof-of-possession is saved in $HOME_DIR/validator-registration.txt"
+      return
+    fi
   fi
-  ok "Admitted to the registry"
 
   step "Locking stake"
   local amount_wei
-  amount_wei=$(python3 -c "print($STAKE_AETH * 10**18)")
+  amount_wei=$(python3 -c "print(int($STAKE_AETH * 10**18))")
   spin_start "Locking $STAKE_AETH AETH as stake"
   local out
   if out=$("$BIN" validator-stake --data-dir "$DATA_DIR" --registry "$REGISTRY" \
@@ -568,9 +559,9 @@ EOF
     printf '%s\n' "$out" | sed -n 's/^\(Transaction\|Block\|Total stake\)/  &/p'
   else
     spin_stop
-    warn "Could not lock the stake automatically:"
+    warn "Could not lock the stake:"
     printf '%s\n' "$out" | tail -2 | sed 's/^/    /'
-    info "Retry later with:"
+    info "Retry with:"
     printf '     %s%s validator-stake --data-dir %s --registry %s --amount %s --insecure%s\n' \
       "$GREY" "$BIN" "$DATA_DIR" "$REGISTRY" "$amount_wei" "$R"
     return

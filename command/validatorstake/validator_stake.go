@@ -9,7 +9,6 @@ import (
 	"github.com/0xPolygon/polygon-edge/command/helper"
 	"github.com/0xPolygon/polygon-edge/command/polybftsecrets"
 	"github.com/0xPolygon/polygon-edge/consensus/polybft/wallet"
-	"github.com/0xPolygon/polygon-edge/crypto"
 	"github.com/0xPolygon/polygon-edge/txrelayer"
 	"github.com/0xPolygon/polygon-edge/types"
 	"github.com/spf13/cobra"
@@ -327,8 +326,6 @@ func leftPad32(b []byte) []byte {
 
 	return padded
 }
-
-var _ = crypto.Keccak256 // selectors above are the precomputed keccak of their signatures
 
 type stakeResult struct {
 	Operator    string `json:"operator"`

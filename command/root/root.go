@@ -65,6 +65,7 @@ func (rc *RootCommand) registerSubCommands() {
 		regenesis.GetCommand(),
 		validatorpop.GetCommand(),
 		validatorstake.GetCommand(),
+		validatorstake.GetRegisterCommand(),
 	)
 }
 
