@@ -114,15 +114,38 @@ flowchart LR
 
 ## ⚡ Quickstart
 
+One command. It installs a full node by default, or walks you through becoming a
+validator.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh | sudo bash
+```
+
+It downloads the release binary and checks it against the published SHA256SUMS, fetches
+the network's genesis, generates your keys, hands you an encrypted backup of them over a
+one-time link, and installs a systemd service that survives reboots.
+
+> [!TIP]
+> Interrupted? Run it again. It resumes where it left off rather than starting over, and
+> it never repeats anything that costs money.
+
+<details>
+<summary><b>Build from source instead</b></summary>
+
+<br>
+
 **Requirements:** Go `1.20+`, `make`, and a C toolchain.
 
 ```bash
 git clone https://github.com/AETHERION-AI-org/aetherion-bft.git
 cd aetherion-bft
-go build -o aetherion-bft .
+CGO_ENABLED=0 go build -trimpath -o aetherion-bft .
 ```
 
-This produces the `aetherion-bft` node binary in the working directory.
+This produces the `aetherion-bft` node binary in the working directory. The network's
+`genesis.json` is in the repository root.
+
+</details>
 
 <br>
 
@@ -157,46 +180,63 @@ the validator set automatically.
 
 ## 🛡️ Run a validator
 
+Validators produce blocks and earn stake-weighted rewards. **Nobody approves you.** The
+chain admits an operator on two facts it verifies for itself: a BLS proof-of-possession,
+which proves you hold the block-signing key, and being the transaction's sender, which
+proves you hold the operator key. The only barrier is the deposit, and that one is real.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh | sudo bash
+```
+
+Choose **Validator** and the installer does the rest: it shows you the address to fund,
+waits for the AETH to arrive, registers you on-chain, waits until your node has caught up
+with the chain, and locks your stake.
+
+| Step | What happens |
+| :-- | :-- |
+| **Fund** | You send at least `1000 AETH` to the operator address it prints. The deposit is locked, not spent, and can be unbonded later. |
+| **Register** | The node calls `registerSelf(blsKey, proofOfPossession)`. The registry verifies the proof against the network's BLS precompile. |
+| **Sync** | The node replays the chain. This takes hours. |
+| **Stake** | The deposit is locked and you join the block-producing set at the next epoch boundary. |
+
+> [!IMPORTANT]
+> Staking waits for your node to finish syncing, and that is not a formality. A validator
+> that joins the set while still catching up cannot sign the blocks it is now responsible
+> for, and its voting power counts against the quorum everyone else needs. The installer
+> will not let you do it.
+
+> [!CAUTION]
+> Your keys live in `/opt/aetherion/data` and must **never** leave the machine. The
+> installer encrypts a backup of them locally, before it touches the network, and serves
+> it over a link that dies the moment you confirm the download. Lose them and you lose
+> the node's identity and its stake. There is no recovery.
+
 <details>
-<summary><b>Expand: validator setup</b></summary>
+<summary><b>Doing it by hand</b></summary>
 
 <br>
 
-Validators produce blocks and earn stake-weighted rewards.
-
-**1. Generate the node's keys** *(writes locally; only public identifiers are ever printed)*
-
 ```bash
-./aetherion-bft secrets init --data-dir ./aetherion-data
+# generate keys
+aetherion-bft secrets init --data-dir /opt/aetherion/data --insecure
+
+# your operator address and node id (public, safe to share)
+aetherion-bft secrets output --data-dir /opt/aetherion/data --validator
+aetherion-bft secrets output --data-dir /opt/aetherion/data --node-id
+
+# fund the operator address, then register yourself
+aetherion-bft validator-register --data-dir /opt/aetherion/data \
+  --registry 0x6ebA8468F754404C1c93ae94C2D1973683eb749A --insecure
+
+# once synced, lock the deposit (amount in wei)
+aetherion-bft validator-stake --data-dir /opt/aetherion/data \
+  --registry 0x6ebA8468F754404C1c93ae94C2D1973683eb749A \
+  --amount 1000000000000000000000 --insecure
 ```
 
-**2. Read the public identifiers to register on-chain**
-
-```bash
-./aetherion-bft secrets output --data-dir ./aetherion-data
-```
-
-This prints your **address**, **BLS public key** and **Node ID**. Register these with the on-chain
-validator registry.
-
-**3. Run with sealing enabled**
-
-```bash
-./aetherion-bft server \
-  --data-dir ./aetherion-data \
-  --chain genesis.json \
-  --libp2p 0.0.0.0:1478 \
-  --jsonrpc 0.0.0.0:8545 \
-  --seal \
-  --log-level INFO
-```
-
-> [!CAUTION]
-> Your validator private keys live in `--data-dir` and must **never** leave the machine. Only the
-> public address, BLS public key and Node ID are ever shared.
-
-Voting weight is capped per validator: additional stake increases rewards but never grants a single
-operator control of consensus.
+`validator-pop` prints the proof-of-possession on its own if you would rather submit the
+registration from a wallet. Both keys are read locally, used to sign, and never printed.
 
 </details>
 
