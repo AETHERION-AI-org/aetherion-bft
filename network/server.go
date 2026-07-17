@@ -282,20 +282,24 @@ func (s *Server) Start() error {
 
 // setupBootnodes sets up the node's bootnode connections
 func (s *Server) setupBootnodes() error {
-	// Check the bootnode config is present
-	if s.config.Chain.Bootnodes == nil {
+	// The network's own bootnodes are compiled in and merged with whatever genesis
+	// carries, so an operator holding an old genesis can still find the network. Genesis
+	// can add to this list; it cannot take these away.
+	configuredBootnodes := mergeAetherionBootnodes(s.config.Chain.Bootnodes)
+
+	if len(configuredBootnodes) == 0 {
 		return ErrNoBootnodes
 	}
 
 	// Check if at least one bootnode is specified
-	if len(s.config.Chain.Bootnodes) < MinimumBootNodes {
+	if len(configuredBootnodes) < MinimumBootNodes {
 		return ErrMinBootnodes
 	}
 
 	bootnodesArr := make([]*peer.AddrInfo, 0)
 	bootnodesMap := make(map[peer.ID]*peer.AddrInfo)
 
-	for _, rawAddr := range s.config.Chain.Bootnodes {
+	for _, rawAddr := range configuredBootnodes {
 		bootnode, err := common.StringToAddrInfo(rawAddr)
 		if err != nil {
 			return fmt.Errorf("failed to parse bootnode %s: %w", rawAddr, err)
