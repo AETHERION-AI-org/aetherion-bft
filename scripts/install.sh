@@ -18,10 +18,8 @@ REGISTRY="0x6ebA8468F754404C1c93ae94C2D1973683eb749A"
 MIN_STAKE=1000
 RPC_PUBLIC="https://rpc.aetherion-ai.org"
 EXPLORER="https://explorer.aetherion-ai.org"
-BOOTNODES=(
-  "/ip4/89.167.111.230/tcp/1478/p2p/16Uiu2HAmLoUGNMxjpdZfPuq6NGhSCiZivGQw9GEh8BaMXA3vUwW4"
-  "/ip4/46.224.18.225/tcp/1478/p2p/16Uiu2HAkzpcTyxTZG92G3P53xatp8BAXucakaTPmQHL6ErHF992z"
-)
+# Bootnodes are not a server flag: the node reads them from genesis.json, which
+# ships in this repository with the network's own list.
 
 HOME_DIR="/opt/aetherion"
 DATA_DIR="$HOME_DIR/data"
@@ -586,9 +584,8 @@ EOF
 # ---------------------------------------------------------------------------
 install_service() {
   step "System service"
-  local seal_flag="" boots=""
+  local seal_flag=""
   [ "$MODE" = "validator" ] && seal_flag=" --seal"
-  for b in "${BOOTNODES[@]}"; do boots+=" --bootnode $b"; done
 
   cat > "/etc/systemd/system/$SERVICE.service" <<EOF
 [Unit]
@@ -600,7 +597,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=$BIN server --data-dir $DATA_DIR --chain $HOME_DIR/genesis.json \\
   --libp2p 0.0.0.0:1478 --jsonrpc 0.0.0.0:8545 --grpc-address 127.0.0.1:9632 \\
-  --json-rpc-batch-request-limit 1000$seal_flag$boots --log-level INFO
+  --json-rpc-batch-request-limit 1000$seal_flag --log-level INFO
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
