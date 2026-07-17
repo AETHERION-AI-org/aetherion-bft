@@ -115,8 +115,12 @@ One command. It installs a full node by default, or walks you through becoming a
 validator.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh -o /tmp/aetherion-install.sh && sudo bash /tmp/aetherion-install.sh
 ```
+
+Two commands rather than a pipe into `sudo`, on purpose: piping makes the script bash's
+own stdin, so its prompts end up fighting the script text for your keyboard. Downloading
+first also means you can read what you are about to run as root.
 
 It downloads the release binary and checks it against the published SHA256SUMS, fetches
 the network's genesis, generates your keys, hands you an encrypted backup of them over a
@@ -183,7 +187,7 @@ which proves you hold the block-signing key, and being the transaction's sender,
 proves you hold the operator key. The only barrier is the deposit, and that one is real.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh -o /tmp/aetherion-install.sh && sudo bash /tmp/aetherion-install.sh
 ```
 
 Choose **Validator** and the installer does the rest: it shows you the address to fund,

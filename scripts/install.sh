@@ -2,7 +2,11 @@
 #
 #   AETHERION BFT node installer
 #
-#   curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh -o /tmp/aetherion-install.sh
+#   sudo bash /tmp/aetherion-install.sh
+#
+#   Not piped into sudo: that makes this script bash's own stdin, and the prompts then
+#   compete with the script text for the keyboard.
 #
 #   Installs a full node by default. Offers a validator path that generates keys,
 #   waits for the operator address to be funded, and joins the block-producing set.
