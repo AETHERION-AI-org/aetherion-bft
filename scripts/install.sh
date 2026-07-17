@@ -95,8 +95,10 @@ UNATTENDED="${AETH_UNATTENDED:-}"
 
 ask() {  # ask <prompt> <default>
   local ans
+  # The answer is this function's stdout, so anything shown to the operator goes to
+  # stderr. (`read -p` already does this, which is why only this branch says so.)
   if [ -n "$UNATTENDED" ]; then
-    printf '  %s?%s %s %s[%s]%s\n' "$CYAN" "$R" "$1" "$D" "$2" "$R"
+    printf '  %s?%s %s %s[%s]%s\n' "$CYAN" "$R" "$1" "$D" "$2" "$R" >&2
     echo "$2"
 
     return
