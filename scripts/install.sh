@@ -243,16 +243,18 @@ generate_keys() {
   fi
   chmod -R go-rwx "$DATA_DIR/consensus" 2>/dev/null || true
 
-  # Read the whole output once, then parse it from a variable. Piping a real command
-  # into `sed ...;q` makes sed close the pipe early, the command dies of SIGPIPE, and
-  # pipefail turns that into a silent exit. Parsing a variable has nothing to signal.
-  local secrets_out
-  secrets_out=$("$BIN" secrets output --data-dir "$DATA_DIR" --insecure 2>/dev/null || true)
-  OPERATOR=$(printf '%s\n' "$secrets_out" \
-             | sed -n 's/.*[Aa]ddress[^0-9a-fA-Fx]*\(0x[0-9a-fA-F]\{40\}\).*/\1/p;T;q')
-  NODE_ID=$(printf '%s\n' "$secrets_out" \
-             | sed -n 's/.*Node ID[^:]*: *\([A-Za-z0-9]*\).*/\1/p;T;q')
-  [ -n "$OPERATOR" ] || die "Could not read the operator address from secrets output"
+  # `secrets output` can print one field at a time, so ask it for exactly the value
+  # wanted rather than pattern-matching a human-readable block. (Note it takes no
+  # --insecure flag; only `secrets init` does.)
+  OPERATOR=$("$BIN" secrets output --data-dir "$DATA_DIR" --validator 2>/dev/null \
+             | tr -d '[:space:]' || true)
+  NODE_ID=$("$BIN" secrets output --data-dir "$DATA_DIR" --node-id 2>/dev/null \
+             | tr -d '[:space:]' || true)
+
+  case "$OPERATOR" in
+    0x[0-9a-fA-F]*) [ ${#OPERATOR} -eq 42 ] || die "Operator address looks malformed: $OPERATOR" ;;
+    *) die "Could not read the operator address from this node's secrets" ;;
+  esac
 
   kv "Operator address" "$B$OPERATOR$R"
   # Not `[ -n "$NODE_ID" ] && kv ...`: as the last line of a function that returns 1
