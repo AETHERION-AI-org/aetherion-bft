@@ -1,0 +1,659 @@
+#!/usr/bin/env bash
+#
+#   AETHERION BFT node installer
+#
+#   curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh | sudo bash
+#
+#   Installs a full node by default. Offers a validator path that generates keys,
+#   waits for the operator address to be funded, and joins the block-producing set.
+#
+#   Everything it writes lives under /opt/aetherion. Nothing leaves the machine
+#   except the key backup you explicitly download, over a link only you are given.
+#
+set -euo pipefail
+
+REPO="AETHERION-AI-org/aetherion-bft"
+CHAIN_ID=100892
+REGISTRY="0x6ebA8468F754404C1c93ae94C2D1973683eb749A"
+MIN_STAKE=1000
+RPC_PUBLIC="https://rpc.aetherion-ai.org"
+EXPLORER="https://explorer.aetherion-ai.org"
+BOOTNODES=(
+  "/ip4/89.167.111.230/tcp/1478/p2p/16Uiu2HAmLoUGNMxjpdZfPuq6NGhSCiZivGQw9GEh8BaMXA3vUwW4"
+  "/ip4/46.224.18.225/tcp/1478/p2p/16Uiu2HAkzpcTyxTZG92G3P53xatp8BAXucakaTPmQHL6ErHF992z"
+)
+
+HOME_DIR="/opt/aetherion"
+DATA_DIR="$HOME_DIR/data"
+BIN="/usr/local/bin/aetherion-bft"
+SERVICE="aetherion-node"
+
+# ---------------------------------------------------------------------------
+# presentation
+# ---------------------------------------------------------------------------
+if [ -t 1 ] && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+  B=$'\033[1m'; D=$'\033[2m'; R=$'\033[0m'
+  BLUE=$'\033[38;5;39m'; CYAN=$'\033[38;5;51m'; GREEN=$'\033[38;5;42m'
+  RED=$'\033[38;5;203m'; YELLOW=$'\033[38;5;221m'; GREY=$'\033[38;5;245m'
+else
+  B=""; D=""; R=""; BLUE=""; CYAN=""; GREEN=""; RED=""; YELLOW=""; GREY=""
+fi
+
+banner() {
+  printf '\n%s' "$BLUE"
+  cat <<'ART'
+        ###    ######## ######## ##     ## ######## ######  ####  #######  ##    ##
+       ## ##   ##          ##    ##     ## ##       ##    ##  ##  ##     ## ###   ##
+      ##   ##  ##          ##    ##     ## ##       ##        ##  ##     ## ####  ##
+     ##     ## ######      ##    ######### ######   ##        ##  ##     ## ## ## ##
+     ######### ##          ##    ##     ## ##       ##        ##  ##     ## ##  ####
+     ##     ## ##          ##    ##     ## ##       ##    ##  ##  ##     ## ##   ###
+     ##     ## ########    ##    ##     ## ########  ######  ####  #######  ##    ##
+ART
+  printf '%s' "$R"
+  printf '%s                    B  F  T     C  O  N  S  E  N  S  U  S     N  O  D  E%s\n\n' "$D$CYAN" "$R"
+}
+
+hr()   { printf '%s%s%s\n' "$D$GREY" "$(printf '─%.0s' $(seq 1 72))" "$R"; }
+step() { printf '\n%s%s▸ %s%s\n' "$B" "$BLUE" "$1" "$R"; }
+ok()   { printf '  %s✓%s %s\n' "$GREEN" "$R" "$1"; }
+info() { printf '  %s·%s %s\n' "$GREY" "$R" "$1"; }
+warn() { printf '  %s!%s %s\n' "$YELLOW" "$R" "$1"; }
+die()  { printf '\n  %s✗ %s%s\n\n' "$RED" "$1" "$R" >&2; exit 1; }
+kv()   { printf '  %s%-22s%s %s\n' "$GREY" "$1" "$R" "$2"; }
+
+spin_pid=""
+spin_start() {
+  [ -t 1 ] || { printf '  %s\n' "$1"; return; }
+  local msg="$1"
+  ( local f='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
+    while :; do
+      i=$(( (i+1) % 10 ))
+      printf '\r  %s%s%s %s' "$CYAN" "${f:$i:1}" "$R" "$msg"
+      sleep 0.1
+    done ) & spin_pid=$!
+  disown 2>/dev/null || true
+}
+spin_stop() {
+  [ -n "$spin_pid" ] && kill "$spin_pid" 2>/dev/null || true
+  spin_pid=""
+  [ -t 1 ] && printf '\r\033[K'
+}
+
+# Unattended mode. A human gets the prompts; automation answers them up front through
+# the environment. Same code path either way, so what we test is what users run.
+#
+#   AETH_UNATTENDED=1     answer every prompt from the environment, never block
+#   AETH_MODE=            full | validator
+#   AETH_STAKE=           how much AETH to lock (validator mode)
+#   AETH_BACKUP_PASS=     passphrase for the encrypted key archive
+#
+# Unattended installs write the key archive to disk instead of serving it over a
+# one-time link: if you are scripting this you already have shell access to the box,
+# so the download dance protects nothing and only gets in the way.
+UNATTENDED="${AETH_UNATTENDED:-}"
+
+ask() {  # ask <prompt> <default>
+  local ans
+  if [ -n "$UNATTENDED" ]; then
+    printf '  %s?%s %s %s[%s]%s\n' "$CYAN" "$R" "$1" "$D" "$2" "$R"
+    echo "$2"
+
+    return
+  fi
+  read -r -p "  ${CYAN}?${R} $1 ${D}[$2]${R} " ans </dev/tty || ans=""
+  echo "${ans:-$2}"
+}
+
+cleanup() { spin_stop; stop_backup_server; }
+trap cleanup EXIT INT TERM
+
+# ---------------------------------------------------------------------------
+# preflight
+# ---------------------------------------------------------------------------
+preflight() {
+  step "Preflight"
+
+  [ "$(id -u)" -eq 0 ] || die "Run as root: curl -fsSL <url> | sudo bash"
+  [ "$(uname -s)" = "Linux" ] || die "Linux only (found $(uname -s))"
+
+  case "$(uname -m)" in
+    x86_64|amd64) ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *) die "Unsupported architecture: $(uname -m)" ;;
+  esac
+  ok "Linux / $ARCH"
+
+  for c in curl tar; do
+    command -v "$c" >/dev/null || die "Missing required command: $c"
+  done
+
+  # Best-effort install of the optional-but-wanted tools.
+  local missing=()
+  command -v zip     >/dev/null || missing+=(zip)
+  command -v openssl >/dev/null || missing+=(openssl)
+  command -v python3 >/dev/null || missing+=(python3)
+  if [ ${#missing[@]} -gt 0 ]; then
+    info "Installing: ${missing[*]}"
+    if   command -v apt-get >/dev/null; then apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq "${missing[@]}" >/dev/null 2>&1 || true
+    elif command -v dnf     >/dev/null; then dnf install -y -q "${missing[@]}" >/dev/null 2>&1 || true
+    elif command -v yum     >/dev/null; then yum install -y -q "${missing[@]}" >/dev/null 2>&1 || true
+    fi
+  fi
+  for c in zip openssl python3; do
+    command -v "$c" >/dev/null || die "Could not install '$c'. Install it and re-run."
+  done
+  ok "Dependencies present"
+
+  local free_kb; free_kb=$(df -Pk /opt 2>/dev/null | awk 'NR==2{print $4}' || echo 0)
+  if [ "${free_kb:-0}" -lt 20971520 ]; then
+    warn "Less than 20 GB free on /opt. The chain grows over time."
+  else
+    ok "Disk space OK ($(( free_kb / 1048576 )) GB free)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# binary + genesis
+# ---------------------------------------------------------------------------
+install_binary() {
+  step "Node binary"
+
+  if [ -x "$BIN" ]; then
+    info "Existing binary found, replacing it"
+  fi
+
+  local tag url tmp
+  tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1 || true)
+
+  if [ -n "$tag" ]; then
+    url="https://github.com/$REPO/releases/download/$tag/aetherion-bft-linux-$ARCH"
+    tmp=$(mktemp)
+    spin_start "Downloading $tag (linux/$ARCH)"
+    if curl -fsSL -o "$tmp" "$url" 2>/dev/null; then
+      spin_stop
+      # Verify against the published checksum file. A release without one is not trusted.
+      local sums expected actual
+      sums=$(curl -fsSL "https://github.com/$REPO/releases/download/$tag/SHA256SUMS" 2>/dev/null || true)
+      expected=$(printf '%s\n' "$sums" | awk -v f="aetherion-bft-linux-$ARCH" '$2 ~ f {print $1}' | head -1)
+      actual=$(sha256sum "$tmp" | awk '{print $1}')
+      if [ -z "$expected" ]; then
+        rm -f "$tmp"; die "Release $tag has no SHA256SUMS. Refusing to install an unverified binary."
+      fi
+      [ "$expected" = "$actual" ] || { rm -f "$tmp"; die "Checksum mismatch. Expected $expected, got $actual."; }
+      install -m 0755 "$tmp" "$BIN"; rm -f "$tmp"
+      ok "Installed $tag (sha256 verified)"
+      return
+    fi
+    spin_stop
+    warn "No prebuilt binary for $tag/$ARCH, building from source"
+  else
+    warn "No published release found, building from source"
+  fi
+
+  command -v go >/dev/null || die "Go is required to build from source. Install Go 1.20+ and re-run."
+  local src; src=$(mktemp -d)
+  spin_start "Building from source (a few minutes)"
+  git clone -q --depth 1 "https://github.com/$REPO.git" "$src" 2>/dev/null \
+    || { spin_stop; die "git clone failed"; }
+  ( cd "$src" && CGO_ENABLED=0 go build -trimpath -o "$BIN" . ) >/dev/null 2>&1 \
+    || { spin_stop; die "go build failed"; }
+  spin_stop; rm -rf "$src"
+  chmod 0755 "$BIN"
+  ok "Built from source"
+}
+
+install_genesis() {
+  step "Network genesis"
+  mkdir -p "$DATA_DIR"
+  curl -fsSL -o "$HOME_DIR/genesis.json" \
+    "https://raw.githubusercontent.com/$REPO/main/genesis.json" \
+    || die "Could not download genesis.json"
+  local id
+  id=$(python3 -c "import json;print(json.load(open('$HOME_DIR/genesis.json'))['params']['chainID'])" 2>/dev/null || echo "")
+  [ "$id" = "$CHAIN_ID" ] || die "Genesis chainID is '$id', expected $CHAIN_ID"
+  ok "Genesis verified (chain $CHAIN_ID, sha256 $(sha256sum "$HOME_DIR/genesis.json" | cut -c1-16)…)"
+}
+
+# ---------------------------------------------------------------------------
+# keys + backup
+# ---------------------------------------------------------------------------
+generate_keys() {
+  step "Node identity"
+  if [ -f "$DATA_DIR/consensus/validator.key" ]; then
+    ok "Existing keys found, keeping them"
+  else
+    "$BIN" secrets init --data-dir "$DATA_DIR" --insecure >/dev/null 2>&1 \
+      || die "Key generation failed"
+    ok "Fresh keys generated"
+  fi
+  chmod -R go-rwx "$DATA_DIR/consensus" 2>/dev/null || true
+
+  OPERATOR=$("$BIN" secrets output --data-dir "$DATA_DIR" --insecure 2>/dev/null \
+             | sed -n 's/.*[Aa]ddress[^0-9a-fA-Fx]*\(0x[0-9a-fA-F]\{40\}\).*/\1/p' | head -1)
+  NODE_ID=$("$BIN" secrets output --data-dir "$DATA_DIR" --insecure 2>/dev/null \
+             | sed -n 's/.*Node ID[^:]*: *\([A-Za-z0-9]*\).*/\1/p' | head -1)
+  [ -n "$OPERATOR" ] || die "Could not read the operator address from secrets output"
+
+  kv "Operator address" "$B$OPERATOR$R"
+  [ -n "$NODE_ID" ] && kv "Node ID" "$NODE_ID"
+}
+
+BACKUP_SRV_PID=""
+BACKUP_DIR=""
+TUNNEL_PID=""
+
+stop_backup_server() {
+  [ -n "$BACKUP_SRV_PID" ] && kill "$BACKUP_SRV_PID" 2>/dev/null || true
+  [ -n "$TUNNEL_PID" ]     && kill "$TUNNEL_PID"     2>/dev/null || true
+  BACKUP_SRV_PID=""; TUNNEL_PID=""
+  [ -n "$BACKUP_DIR" ] && rm -rf "$BACKUP_DIR" 2>/dev/null || true
+  BACKUP_DIR=""
+}
+
+backup_keys() {
+  step "Key backup"
+  cat <<EOF
+
+  ${B}Your keys exist only on this machine.${R}
+  ${GREY}Lose them and you lose the node's identity and its stake. There is no
+  recovery, no support desk, and no one who can reissue them. Back them up now.${R}
+
+EOF
+
+  # Passphrase. The archive travels over a tunnel we do not own, so it is encrypted
+  # here, on this machine, before it ever touches the network.
+  local pass pass2
+  if [ -n "$UNATTENDED" ]; then
+    pass="${AETH_BACKUP_PASS:-}"
+    [ ${#pass} -ge 8 ] || die "AETH_BACKUP_PASS must be at least 8 characters in unattended mode"
+  else
+    while :; do
+      read -r -s -p "  Choose a passphrase for the backup: " pass </dev/tty; echo
+      [ ${#pass} -ge 8 ] || { warn "At least 8 characters, please."; continue; }
+      read -r -s -p "  Repeat it: " pass2 </dev/tty; echo
+      [ "$pass" = "$pass2" ] && break
+      warn "They do not match. Again."
+    done
+  fi
+
+  BACKUP_DIR=$(mktemp -d); chmod 700 "$BACKUP_DIR"
+  local plain="$BACKUP_DIR/keys.zip"
+  ( cd "$DATA_DIR" && zip -q -r "$plain" consensus ) || die "Could not archive the keys"
+
+  local hash short enc name
+  hash=$(sha256sum "$plain" | awk '{print $1}')
+  short=${hash:0:16}
+  name="aetherion-keys-${short}.zip.enc"
+  enc="$BACKUP_DIR/$name"
+
+  # AES-256 with PBKDF2. Not zip's own encryption, which is broken by design.
+  openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+    -in "$plain" -out "$enc" -pass pass:"$pass" || die "Encryption failed"
+  shred -u "$plain" 2>/dev/null || rm -f "$plain"
+  unset pass pass2
+
+  local enc_hash; enc_hash=$(sha256sum "$enc" | awk '{print $1}')
+
+  # Scripted install: hand the archive over as a file. Whoever is automating this
+  # already has shell access, so a one-time download link would guard nothing.
+  if [ -n "$UNATTENDED" ]; then
+    mkdir -p "$HOME_DIR/backups"; chmod 700 "$HOME_DIR/backups"
+    mv "$enc" "$HOME_DIR/backups/$name"
+    rm -rf "$BACKUP_DIR"; BACKUP_DIR=""
+    ok "Backup written to $HOME_DIR/backups/$name"
+    kv "sha256" "$enc_hash"
+    warn "Copy it off this machine. Nothing else holds these keys."
+
+    return
+  fi
+
+  # A single-file server: one unguessable path, no directory listing, no other route.
+  local token port
+  token=$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  port=$(python3 -c "import socket;s=socket.socket();s.bind(('',0));print(s.getsockname()[1]);s.close()")
+
+  python3 - "$enc" "$token" "$name" "$port" <<'PY' >/dev/null 2>&1 &
+import sys, http.server, socketserver
+path, token, name, port = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+want = f"/{token}/{name}"
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != want:            # nothing else exists: no listing, no probing
+            self.send_error(404); return
+        with open(path, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_HEAD(self): self.send_error(404)
+    def log_message(self, *a): pass
+
+socketserver.TCPServer.allow_reuse_address = True
+socketserver.TCPServer(("0.0.0.0", port), H).serve_forever()
+PY
+  BACKUP_SRV_PID=$!
+  sleep 1
+
+  # Prefer a real HTTPS URL. Browsers are hostile to bare http:// downloads, and the
+  # tunnel also works when the box has no public IP or a closed firewall.
+  local url=""
+  if ! command -v cloudflared >/dev/null; then
+    spin_start "Setting up an HTTPS tunnel"
+    local cf_arch="amd64"; [ "$ARCH" = "arm64" ] && cf_arch="arm64"
+    curl -fsSL -o /usr/local/bin/cloudflared \
+      "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}" 2>/dev/null \
+      && chmod +x /usr/local/bin/cloudflared || true
+    spin_stop
+  fi
+  if command -v cloudflared >/dev/null; then
+    local cflog="$BACKUP_DIR/cf.log"
+    cloudflared tunnel --url "http://127.0.0.1:$port" --no-autoupdate >"$cflog" 2>&1 &
+    TUNNEL_PID=$!
+    spin_start "Opening HTTPS tunnel"
+    for _ in $(seq 1 30); do
+      url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$cflog" 2>/dev/null | head -1 || true)
+      [ -n "$url" ] && break
+      sleep 1
+    done
+    spin_stop
+  fi
+
+  local link
+  if [ -n "$url" ]; then
+    link="$url/$token/$name"
+    ok "HTTPS tunnel is up"
+  else
+    local ip; ip=$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
+    link="http://$ip:$port/$token/$name"
+    warn "Tunnel unavailable, serving over plain HTTP instead"
+    info "The archive itself is encrypted, so the download stays confidential."
+  fi
+
+  hr
+  printf '\n  %sDownload your backup now, in a browser on your own computer:%s\n\n' "$B" "$R"
+  printf '     %s%s%s\n\n' "$CYAN$B" "$link" "$R"
+  printf '  %sVerify it after downloading:%s\n' "$B" "$R"
+  printf '     %ssha256sum %s%s\n' "$GREY" "$name" "$R"
+  printf '     %s%s%s\n\n' "$GREY" "$enc_hash" "$R"
+  printf '  %sDecrypt it when you need it:%s\n' "$B" "$R"
+  printf '     %sopenssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in %s -out keys.zip%s\n\n' "$GREY" "$name" "$R"
+  printf '  %sThis link dies the moment you answer below, and is served by this\n  installer alone. It is not reachable afterwards.%s\n\n' "$D$GREY" "$R"
+  hr
+
+  local a
+  while :; do
+    a=$(ask "Have you downloaded and verified the backup? (yes/no)" "no")
+    case "${a,,}" in
+      yes|y) break ;;
+      *) printf '  %sTake your time. The link above stays live until you answer yes.%s\n' "$GREY" "$R" ;;
+    esac
+  done
+
+  stop_backup_server
+  ok "Backup confirmed. Download server stopped and the archive wiped from this host."
+}
+
+# ---------------------------------------------------------------------------
+# validator path
+# ---------------------------------------------------------------------------
+rpc() {  # rpc <method> <params-json>
+  curl -fsS --max-time 10 -X POST "$RPC_PUBLIC" -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" 2>/dev/null || echo '{}'
+}
+
+balance_wei() {
+  rpc eth_getBalance "[\"$1\",\"latest\"]" | sed -n 's/.*"result":"\([^"]*\)".*/\1/p'
+}
+
+wei_to_aeth() { python3 -c "print(f'{int('${1:-0x0}',16)/10**18:,.4f}')" 2>/dev/null || echo "0"; }
+
+await_funding() {
+  printf '\n'
+  local want
+  want=$(ask "How much AETH will you lock as stake? (minimum $MIN_STAKE)" "${AETH_STAKE:-$MIN_STAKE}")
+  if ! python3 -c "import sys;sys.exit(0 if float('$want') >= $MIN_STAKE else 1)" 2>/dev/null; then
+    warn "Below the $MIN_STAKE AETH minimum. Using $MIN_STAKE."
+    want=$MIN_STAKE
+  fi
+  STAKE_AETH="$want"
+
+  local need_wei
+  need_wei=$(python3 -c "print(int($STAKE_AETH * 10**18))")
+
+  cat <<EOF
+
+  ${B}Fund this address to produce blocks${R}
+
+     ${CYAN}${B}${OPERATOR}${R}
+
+  ${GREY}This node will lock ${B}${STAKE_AETH} AETH${R}${GREY} as stake. The deposit stays yours: it is
+  locked, not spent, and can be unbonded later. Send a little extra to cover
+  gas. Until it arrives this node still runs as a full node, which serves RPC
+  and relays blocks but does not seal them or earn rewards.${R}
+
+  ${GREY}Watch it arrive: ${EXPLORER}/address/${OPERATOR}${R}
+
+EOF
+
+  local bal aeth start
+  start=$(date +%s)
+  while :; do
+    bal=$(balance_wei "$OPERATOR"); bal=${bal:-0x0}
+    aeth=$(wei_to_aeth "$bal")
+    if python3 -c "import sys;sys.exit(0 if int('$bal',16) >= $need_wei else 1)" 2>/dev/null; then
+      spin_stop
+      ok "Funded: $aeth AETH"
+      return 0
+    fi
+    spin_stop
+    printf '\r\033[K  %s⠿%s waiting for funds  %s%s AETH%s / %s AETH  %s(%ss)%s' \
+      "$CYAN" "$R" "$B" "$aeth" "$R" "$MIN_STAKE" "$D$GREY" "$(( $(date +%s) - start ))" "$R"
+    sleep 1
+  done
+}
+
+# is_whitelisted <address> -> 0 if the registry already admitted this operator.
+# getValidator returns a tuple opening with a dynamic `bytes`, so word 0 is the offset
+# to the tuple head and `whitelisted` is that head's sixth word.
+is_whitelisted() {
+  local res
+  res=$(rpc eth_call "[{\"to\":\"$REGISTRY\",\"data\":\"0x1904bb2e$(printf '%064s' "${1#0x}" | tr ' ' '0')\"},\"latest\"]" \
+        | sed -n 's/.*"result":"0x\([0-9a-fA-F]*\)".*/\1/p')
+  [ -n "$res" ] || return 1
+  python3 - "$res" <<'PY'
+import sys
+raw = bytes.fromhex(sys.argv[1])
+if len(raw) < 32: sys.exit(1)
+base = int.from_bytes(raw[0:32], "big")
+s = base + 5*32
+if s + 32 > len(raw): sys.exit(1)
+sys.exit(0 if int.from_bytes(raw[s:s+32], "big") else 1)
+PY
+}
+
+join_validator_set() {
+  step "Joining the validator set"
+
+  local pop_out bls pop
+  pop_out=$("$BIN" validator-pop --data-dir "$DATA_DIR" --chain-id "$CHAIN_ID" \
+            --registry "$REGISTRY" --insecure 2>/dev/null) || die "Could not build the proof-of-possession"
+  bls=$(printf '%s\n' "$pop_out" | sed -n 's/.*BLS public key *= *\(0x[0-9a-fA-F]*\).*/\1/p' | head -1)
+  pop=$(printf '%s\n' "$pop_out" | sed -n 's/.*Proof-of-possession *= *\(0x[0-9a-fA-F]*\).*/\1/p' | head -1)
+  [ -n "$bls" ] && [ -n "$pop" ] || die "Could not parse the proof-of-possession"
+  ok "Proof-of-possession generated"
+
+  cat > "$HOME_DIR/validator-registration.txt" <<EOF
+Aetherion Network (chain $CHAIN_ID) validator registration
+Generated $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+operator            = $OPERATOR
+blsPublicKey        = $bls
+proofOfPossession   = $pop
+registry            = $REGISTRY
+
+Governance calls: registerValidator(operator, blsPublicKey, proofOfPossession)
+Then this node locks its own stake (>= $MIN_STAKE AETH) from the operator address.
+EOF
+  chmod 600 "$HOME_DIR/validator-registration.txt"
+
+  if ! is_whitelisted "$OPERATOR"; then
+    cat <<EOF
+
+  ${B}One step needs the network's governance${R}
+
+  ${GREY}An operator is admitted to the registry by governance, not by itself. Send
+  the two values below to the Aetherion team. They prove you hold the signing
+  key and reveal nothing secret, so they are safe to share in the open.${R}
+
+EOF
+    kv "Operator" "$OPERATOR"
+    printf '  %s%-22s%s %s\n' "$GREY" "BLS public key" "$R" "$bls"
+    printf '  %s%-22s%s %s\n\n' "$GREY" "Proof-of-possession" "$R" "$pop"
+    info "Also saved to $HOME_DIR/validator-registration.txt"
+
+    local a; a=$(ask "Wait here until you are admitted? (yes/no)" "yes")
+    case "${a,,}" in
+      yes|y) ;;
+      *) warn "Fine. Re-run this installer once admitted and it will pick up from here."
+         return ;;
+    esac
+
+    local waited=0
+    while ! is_whitelisted "$OPERATOR"; do
+      printf '\r\033[K  %s⠿%s waiting to be admitted to the registry  %s(%ss)%s' \
+        "$CYAN" "$R" "$D$GREY" "$waited" "$R"
+      sleep 5; waited=$((waited + 5))
+    done
+    printf '\r\033[K'
+  fi
+  ok "Admitted to the registry"
+
+  step "Locking stake"
+  local amount_wei
+  amount_wei=$(python3 -c "print($STAKE_AETH * 10**18)")
+  spin_start "Locking $STAKE_AETH AETH as stake"
+  local out
+  if out=$("$BIN" validator-stake --data-dir "$DATA_DIR" --registry "$REGISTRY" \
+           --amount "$amount_wei" --jsonrpc "$RPC_PUBLIC" --insecure 2>&1); then
+    spin_stop
+    ok "Stake locked"
+    printf '%s\n' "$out" | sed -n 's/^\(Transaction\|Block\|Total stake\)/  &/p'
+  else
+    spin_stop
+    warn "Could not lock the stake automatically:"
+    printf '%s\n' "$out" | tail -2 | sed 's/^/    /'
+    info "Retry later with:"
+    printf '     %s%s validator-stake --data-dir %s --registry %s --amount %s --insecure%s\n' \
+      "$GREY" "$BIN" "$DATA_DIR" "$REGISTRY" "$amount_wei" "$R"
+    return
+  fi
+
+  info "You join the block-producing set at the next epoch boundary (~10 minutes)."
+}
+
+# ---------------------------------------------------------------------------
+# service
+# ---------------------------------------------------------------------------
+install_service() {
+  step "System service"
+  local seal_flag="" boots=""
+  [ "$MODE" = "validator" ] && seal_flag=" --seal"
+  for b in "${BOOTNODES[@]}"; do boots+=" --bootnode $b"; done
+
+  cat > "/etc/systemd/system/$SERVICE.service" <<EOF
+[Unit]
+Description=Aetherion Network Node (AETHERION BFT)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$BIN server --data-dir $DATA_DIR --chain $HOME_DIR/genesis.json \\
+  --libp2p 0.0.0.0:1478 --jsonrpc 0.0.0.0:8545 --grpc-address 127.0.0.1:9632 \\
+  --json-rpc-batch-request-limit 1000$seal_flag$boots --log-level INFO
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable -q "$SERVICE" 2>/dev/null || true
+  systemctl restart "$SERVICE"
+  ok "Service $SERVICE enabled and started"
+
+  spin_start "Waiting for the node to answer"
+  local head=""
+  for _ in $(seq 1 45); do
+    head=$(curl -fsS --max-time 3 -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' 2>/dev/null \
+      | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')
+    [ -n "$head" ] && break
+    sleep 2
+  done
+  spin_stop
+  [ -n "$head" ] || { warn "No RPC response yet. Check: journalctl -u $SERVICE -f"; return; }
+  ok "Node is live at block $((head))"
+}
+
+summary() {
+  local head net
+  head=$(rpc eth_blockNumber "[]" | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')
+  net=$((${head:-0x0}))
+  printf '\n'; hr
+  printf '\n  %s%s Your node is running%s\n\n' "$GREEN$B" "✓" "$R"
+  kv "Mode"        "$MODE"
+  kv "Operator"    "$OPERATOR"
+  kv "Data"        "$DATA_DIR"
+  kv "RPC"         "http://127.0.0.1:8545"
+  kv "Network head" "$net"
+  printf '\n  %sLogs%s     journalctl -u %s -f\n' "$B" "$R" "$SERVICE"
+  printf '  %sStop%s     systemctl stop %s\n' "$B" "$R" "$SERVICE"
+  printf '  %sExplorer%s %s/address/%s\n\n' "$B" "$R" "$EXPLORER" "$OPERATOR"
+  hr; printf '\n'
+}
+
+# ---------------------------------------------------------------------------
+main() {
+  banner
+  printf '  %sThis installs a node for the Aetherion Network (chain %s).%s\n' "$GREY" "$CHAIN_ID" "$R"
+  printf '  %sIt writes to %s and installs a systemd service.%s\n' "$GREY" "$HOME_DIR" "$R"
+
+  preflight
+
+  step "Node type"
+  printf '  %s1%s  Full node    %s— syncs, serves RPC, relays blocks. No stake needed.%s\n' "$B" "$R" "$GREY" "$R"
+  printf '  %s2%s  Validator    %s— everything above, plus produces blocks and earns\n                  rewards. Locks at least %s AETH as stake.%s\n\n' "$B" "$R" "$GREY" "$MIN_STAKE" "$R"
+  local choice; choice=$(ask "Which one?" "${AETH_MODE:-1}")
+  case "$choice" in
+    2|validator|v) MODE="validator" ;;
+    *)             MODE="full" ;;
+  esac
+  ok "Installing as: $MODE node"
+
+  install_binary
+  install_genesis
+  generate_keys
+  backup_keys
+
+  if [ "$MODE" = "validator" ]; then
+    step "Funding"
+    await_funding
+    join_validator_set
+  fi
+
+  install_service
+  summary
+}
+
+main "$@"

@@ -23,6 +23,7 @@ import (
 	"github.com/0xPolygon/polygon-edge/command/status"
 	"github.com/0xPolygon/polygon-edge/command/txpool"
 	"github.com/0xPolygon/polygon-edge/command/validatorpop"
+	"github.com/0xPolygon/polygon-edge/command/validatorstake"
 	"github.com/0xPolygon/polygon-edge/command/version"
 )
 
@@ -63,6 +64,7 @@ func (rc *RootCommand) registerSubCommands() {
 		bridge.GetCommand(),
 		regenesis.GetCommand(),
 		validatorpop.GetCommand(),
+		validatorstake.GetCommand(),
 	)
 }
 
