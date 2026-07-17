@@ -167,7 +167,7 @@ install_binary() {
 
   local tag url tmp
   tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1 || true)
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p;T;q' || true)
 
   if [ -n "$tag" ]; then
     url="https://github.com/$REPO/releases/download/$tag/aetherion-bft-linux-$ARCH"
@@ -178,7 +178,7 @@ install_binary() {
       # Verify against the published checksum file. A release without one is not trusted.
       local sums expected actual
       sums=$(curl -fsSL "https://github.com/$REPO/releases/download/$tag/SHA256SUMS" 2>/dev/null || true)
-      expected=$(printf '%s\n' "$sums" | awk -v f="aetherion-bft-linux-$ARCH" '$2 ~ f {print $1}' | head -1)
+      expected=$(printf '%s\n' "$sums" | awk -v f="aetherion-bft-linux-$ARCH" '$2 == f {print $1; exit}')
       actual=$(sha256sum "$tmp" | awk '{print $1}')
       if [ -z "$expected" ]; then
         rm -f "$tmp"; die "Release $tag has no SHA256SUMS. Refusing to install an unverified binary."
@@ -233,9 +233,9 @@ generate_keys() {
   chmod -R go-rwx "$DATA_DIR/consensus" 2>/dev/null || true
 
   OPERATOR=$("$BIN" secrets output --data-dir "$DATA_DIR" --insecure 2>/dev/null \
-             | sed -n 's/.*[Aa]ddress[^0-9a-fA-Fx]*\(0x[0-9a-fA-F]\{40\}\).*/\1/p' | head -1)
+             | sed -n 's/.*[Aa]ddress[^0-9a-fA-Fx]*\(0x[0-9a-fA-F]\{40\}\).*/\1/p;T;q')
   NODE_ID=$("$BIN" secrets output --data-dir "$DATA_DIR" --insecure 2>/dev/null \
-             | sed -n 's/.*Node ID[^:]*: *\([A-Za-z0-9]*\).*/\1/p' | head -1)
+             | sed -n 's/.*Node ID[^:]*: *\([A-Za-z0-9]*\).*/\1/p;T;q' || true)
   [ -n "$OPERATOR" ] || die "Could not read the operator address from secrets output"
 
   kv "Operator address" "$B$OPERATOR$R"
@@ -485,8 +485,8 @@ join_validator_set() {
   local pop_out bls pop
   pop_out=$("$BIN" validator-pop --data-dir "$DATA_DIR" --chain-id "$CHAIN_ID" \
             --registry "$REGISTRY" --insecure 2>/dev/null) || die "Could not build the proof-of-possession"
-  bls=$(printf '%s\n' "$pop_out" | sed -n 's/.*BLS public key *= *\(0x[0-9a-fA-F]*\).*/\1/p' | head -1)
-  pop=$(printf '%s\n' "$pop_out" | sed -n 's/.*Proof-of-possession *= *\(0x[0-9a-fA-F]*\).*/\1/p' | head -1)
+  bls=$(printf '%s\n' "$pop_out" | sed -n 's/.*BLS public key *= *\(0x[0-9a-fA-F]*\).*/\1/p;T;q')
+  pop=$(printf '%s\n' "$pop_out" | sed -n 's/.*Proof-of-possession *= *\(0x[0-9a-fA-F]*\).*/\1/p;T;q')
   [ -n "$bls" ] && [ -n "$pop" ] || die "Could not parse the proof-of-possession"
   ok "Proof-of-possession generated"
 
