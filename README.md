@@ -49,8 +49,6 @@
 
 ## 🌐 Network parameters
 
-<div align="center">
-
 | Parameter           | Value                                                        |
 | :------------------ | :----------------------------------------------------------- |
 | **Network**         | Aetherion Network                                            |
@@ -63,7 +61,6 @@
 | **Public RPC**      | <https://rpc.aetherion-ai.org>                               |
 | **Explorer**        | <https://explorer.aetherion-ai.org>                          |
 
-</div>
 
 <br>
 
@@ -246,8 +243,6 @@ registration from a wallet. Both keys are read locally, used to sign, and never 
 
 The per-epoch reward can only ever shrink. It is arithmetic, not a decision.
 
-<div align="center">
-
 | Era   | Reward / epoch                 | Approx. duration        |
 | :---: | :----------------------------- | :---------------------- |
 | **1** | `50.0000 AETH`                 | now → ~4 years          |
@@ -256,7 +251,6 @@ The per-epoch reward can only ever shrink. It is arithmetic, not a decision.
 | **4** | `6.2500 AETH`                  | ~12 → ~16 years         |
 | **…** | halving every `210,240` epochs | → `21,000,000 AETH` cap |
 
-</div>
 
 <br>
 
