@@ -20,6 +20,9 @@ REPO="AETHERION-AI-org/aetherion-bft"
 CHAIN_ID=100892
 REGISTRY="0x6ebA8468F754404C1c93ae94C2D1973683eb749A"
 MIN_STAKE=1000
+# Gas for the two transactions this node sends (register, stake). Generous on purpose:
+# a validator that cannot pay for its own stake transaction is stuck.
+GAS_BUFFER=1
 RPC_PUBLIC="https://rpc.aetherion-ai.org"
 EXPLORER="https://explorer.aetherion-ai.org"
 # Bootnodes are not a server flag: the node reads them from genesis.json, which
@@ -641,40 +644,58 @@ wei_to_aeth() { python3 -c "print(f'{int('${1:-0x0}',16)/10**18:,.4f}')" 2>/dev/
 await_funding() {
   printf '\n'
 
-  # Say what is already locked before asking about locking more. On a resumed run the
-  # screen otherwise reads as though it is about to charge the operator a second time,
-  # which is a fair thing to panic about. Read it from the chain, which is the only
-  # place that knows.
+  # What has this operator already committed to? The chain knows what is locked; the
+  # state file remembers what was asked for. Between them there is nothing left to ask
+  # on a resumed run, and asking anyway reads as though the installer is about to
+  # charge for the stake a second time.
   local already
   already=$(current_stake_wei "$OPERATOR")
   if [ -n "$already" ] && [ "$already" != "0" ]; then
-    ok "Already locked on-chain: $(python3 -c "print(f'{$already/10**18:,.4f}')") AETH"
-    info "Nothing below will lock that again. Only a shortfall is ever topped up."
+    ok "Already staked: $(python3 -c "print(f'{$already/10**18:,.4f}')") AETH"
+    info "This installer only does the first stake. Top up later with validator-stake."
+    STAKE_AETH=$(python3 -c "print(f'{$already/10**18:g}')")
+
+    return 0
   fi
 
-  local want
-  want=$(ask "Target stake in AETH, counting anything already locked (min $MIN_STAKE)" "${AETH_STAKE:-$MIN_STAKE}")
-  if ! python3 -c "import sys;sys.exit(0 if float('$want') >= $MIN_STAKE else 1)" 2>/dev/null; then
-    warn "Below the $MIN_STAKE AETH minimum. Using $MIN_STAKE."
-    want=$MIN_STAKE
+  # Amount chosen on an earlier run: use it, do not ask again.
+  local saved=""
+  [ -f "$STATE_FILE" ] && saved=$(sed -n 's/^stake_target=//p' "$STATE_FILE" | tail -1)
+  if [ -n "$saved" ]; then
+    STAKE_AETH="$saved"
+    ok "Resuming with the stake you already chose: $STAKE_AETH AETH"
+  else
+    local want
+    want=$(ask "How much AETH will you stake? (minimum $MIN_STAKE)" "${AETH_STAKE:-$MIN_STAKE}")
+    if ! python3 -c "import sys;sys.exit(0 if float('$want') >= $MIN_STAKE else 1)" 2>/dev/null; then
+      warn "Below the $MIN_STAKE AETH minimum. Using $MIN_STAKE."
+      want=$MIN_STAKE
+    fi
+    STAKE_AETH="$want"
+    mkdir -p "$HOME_DIR" 2>/dev/null || true
+    echo "stake_target=$STAKE_AETH" >> "$STATE_FILE"
   fi
-  STAKE_AETH="$want"
 
-  local need_wei
-  need_wei=$(python3 -c "print(int($STAKE_AETH * 10**18))")
+  # Wait for stake + gas, not just stake: an operator funded to the exact stake cannot
+  # pay for the transaction that locks it.
+  local need_aeth need_wei
+  need_aeth=$(python3 -c "print(f'{$STAKE_AETH + $GAS_BUFFER:g}')")
+  need_wei=$(python3 -c "print(int(($STAKE_AETH + $GAS_BUFFER) * 10**18))")
 
   cat <<EOF
 
-  ${B}Fund this address to produce blocks${R}
+  ${B}Send ${need_aeth} AETH to this address${R}
 
      ${SOFT}${B}${OPERATOR}${R}
 
-  ${GREY}This node will lock ${B}${STAKE_AETH} AETH${R}${GREY} as stake. The deposit stays yours: it is
-  locked, not spent, and can be unbonded later. Send a little extra to cover
-  gas. Until it arrives this node still runs as a full node, which serves RPC
-  and relays blocks but does not seal them or earn rewards.${R}
+  ${GREY}That is ${B}${STAKE_AETH}${R}${GREY} to stake plus ${B}${GAS_BUFFER}${R}${GREY} for gas. The stake is locked, not
+  spent: it stays yours and can be unbonded later. The gas pays for the two
+  transactions this node sends to join.
 
-  ${GREY}Watch it arrive: ${EXPLORER}/address/${OPERATOR}${R}
+  Until it arrives the node still runs as a full node, serving RPC and relaying
+  blocks, but it does not seal them or earn rewards.
+
+  Watch it arrive: ${EXPLORER}/address/${OPERATOR}${R}
 
 EOF
 
@@ -686,14 +707,15 @@ EOF
     if python3 -c "import sys;sys.exit(0 if int('$bal',16) >= $need_wei else 1)" 2>/dev/null; then
       spin_stop
       ok "Funded: $aeth AETH"
+
       return 0
     fi
     spin_stop
     if [ -t 1 ]; then
-      printf '\r\033[K  %s⠿%s waiting for funds  %s%s AETH%s / %s AETH  %s(%ss)%s' \
-        "$SOFT" "$R" "$B" "$aeth" "$R" "$STAKE_AETH" "$D$GREY" "$(( $(date +%s) - start ))" "$R"
+      printf '\r\033[K  %s⠿%s waiting for funds  %s%s%s / %s AETH  %s(%ss)%s' \
+        "$SOFT" "$R" "$B" "$aeth" "$R" "$need_aeth" "$D$GREY" "$(( $(date +%s) - start ))" "$R"
     elif [ $(( ($(date +%s) - start) % 60 )) -eq 0 ]; then
-      printf '  waiting for funds: %s / %s AETH\n' "$aeth" "$STAKE_AETH"
+      printf '  waiting for funds: %s / %s AETH\n' "$aeth" "$need_aeth"
     fi
     sleep 1
   done
