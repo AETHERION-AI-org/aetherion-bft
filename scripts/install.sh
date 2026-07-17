@@ -449,8 +449,31 @@ PY
   local link
   if [ -n "$url" ]; then
     link="$url/$token/$name"
-    ok "HTTPS tunnel is up"
-  else
+    # cloudflared prints the hostname before the edge can actually route to it, so the
+    # link works only some seconds after it appears. Handing it over early means the
+    # operator clicks a dead link and concludes the installer is broken. Wait until the
+    # link really serves the file before showing it.
+    spin_start "Waiting for the tunnel to go live"
+    local live=""
+    for _ in $(seq 1 40); do
+      if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$link" 2>/dev/null || echo 000)" = "200" ]; then
+        live=1
+        break
+      fi
+      sleep 2
+    done
+    spin_stop
+    if [ -n "$live" ]; then
+      ok "HTTPS tunnel is live"
+    else
+      warn "Tunnel came up but is not serving; falling back to plain HTTP"
+      kill "$TUNNEL_PID" 2>/dev/null || true
+      TUNNEL_PID=""
+      url=""
+    fi
+  fi
+
+  if [ -z "$url" ]; then
     local ip; ip=$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
     link="http://$ip:$port/$token/$name"
     warn "Tunnel unavailable, serving over plain HTTP instead"
