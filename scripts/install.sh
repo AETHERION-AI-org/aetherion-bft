@@ -429,11 +429,14 @@ rpc() {  # rpc <method> <params-json>
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" 2>/dev/null || echo '{}'
 }
 
-rpc_head() {  # rpc_head <endpoint> -> decimal head, empty on failure
+rpc_head() {  # rpc_head <endpoint> -> decimal head, empty when the endpoint is not up
   local r
+  # `|| true`: curl -f exits non-zero on a refused connection, pipefail promotes it, and
+  # set -e would kill the installer. An endpoint that is not answering yet is the normal
+  # case here, not a failure.
   r=$(curl -fsS --max-time 8 -X POST "$1" -H 'Content-Type: application/json' \
       -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' 2>/dev/null \
-      | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')
+      | sed -n 's/.*"result":"\([^"]*\)".*/\1/p' || true)
   [ -n "$r" ] || return 0
   printf '%d' "$r"
 }
@@ -650,9 +653,11 @@ EOF
   spin_start "Waiting for the node to answer"
   local head=""
   for _ in $(seq 1 45); do
+    # `|| true`: this loop exists precisely because the node is not answering yet, so a
+    # failed curl must not be fatal. Without it the first poll killed the installer.
     head=$(curl -fsS --max-time 3 -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' \
       -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' 2>/dev/null \
-      | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')
+      | sed -n 's/.*"result":"\([^"]*\)".*/\1/p' || true)
     [ -n "$head" ] && break
     sleep 2
   done
