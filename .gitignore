@@ -1,5 +1,7 @@
 peers.json
-genesis.json
+# The canonical network genesis is tracked (see /genesis.json).
+# Locally generated ones live in data dirs and stay ignored.
+**/data/**/genesis.json
 manifest.json
 secretsManagerConfig.json
 *-packr.go
