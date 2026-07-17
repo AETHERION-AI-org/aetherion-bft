@@ -429,6 +429,15 @@ rpc() {  # rpc <method> <params-json>
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" 2>/dev/null || echo '{}'
 }
 
+rpc_head() {  # rpc_head <endpoint> -> decimal head, empty on failure
+  local r
+  r=$(curl -fsS --max-time 8 -X POST "$1" -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' 2>/dev/null \
+      | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')
+  [ -n "$r" ] || return 0
+  printf '%d' "$r"
+}
+
 balance_wei() {
   rpc eth_getBalance "[\"$1\",\"latest\"]" | sed -n 's/.*"result":"\([^"]*\)".*/\1/p'
 }
@@ -499,6 +508,38 @@ sys.exit(0 if int.from_bytes(raw[s:s+32], "big") else 1)
 PY
 }
 
+# A validator that joins the set while still syncing cannot sign the blocks it is now
+# responsible for, and its share of the voting power becomes dead weight. In a small set
+# that is enough to put quorum out of reach for everyone, so an unsynced node staking
+# does not just fail to help: it can stop the chain. Stake is therefore gated on having
+# caught up, and this is not optional.
+await_sync() {
+  step "Waiting to catch up"
+
+  local local_head chain_head lag start
+  start=$(date +%s)
+  while :; do
+    chain_head=$(rpc_head "$RPC_PUBLIC")
+    local_head=$(rpc_head "http://127.0.0.1:8545")
+    if [ -z "$local_head" ] || [ -z "$chain_head" ]; then
+      printf '\r\033[K  %s⠿%s waiting for the node to answer' "$CYAN" "$R"
+      sleep 5
+      continue
+    fi
+    lag=$(( chain_head - local_head ))
+    if [ "$lag" -le 5 ]; then
+      printf '\r\033[K'
+      ok "Synced (block $local_head)"
+
+      return 0
+    fi
+    printf '\r\033[K  %s⠿%s syncing  %s%s%s / %s  %s(%s behind, %ss elapsed)%s' \
+      "$CYAN" "$R" "$B" "$local_head" "$R" "$chain_head" "$D$GREY" "$lag" \
+      "$(( $(date +%s) - start ))" "$R"
+    sleep 10
+  done
+}
+
 join_validator_set() {
   step "Joining the validator set"
 
@@ -546,6 +587,8 @@ EOF
       return
     fi
   fi
+
+  await_sync
 
   step "Locking stake"
   local amount_wei
