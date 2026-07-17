@@ -243,10 +243,15 @@ generate_keys() {
   fi
   chmod -R go-rwx "$DATA_DIR/consensus" 2>/dev/null || true
 
-  OPERATOR=$("$BIN" secrets output --data-dir "$DATA_DIR" --insecure 2>/dev/null \
+  # Read the whole output once, then parse it from a variable. Piping a real command
+  # into `sed ...;q` makes sed close the pipe early, the command dies of SIGPIPE, and
+  # pipefail turns that into a silent exit. Parsing a variable has nothing to signal.
+  local secrets_out
+  secrets_out=$("$BIN" secrets output --data-dir "$DATA_DIR" --insecure 2>/dev/null || true)
+  OPERATOR=$(printf '%s\n' "$secrets_out" \
              | sed -n 's/.*[Aa]ddress[^0-9a-fA-Fx]*\(0x[0-9a-fA-F]\{40\}\).*/\1/p;T;q')
-  NODE_ID=$("$BIN" secrets output --data-dir "$DATA_DIR" --insecure 2>/dev/null \
-             | sed -n 's/.*Node ID[^:]*: *\([A-Za-z0-9]*\).*/\1/p;T;q' || true)
+  NODE_ID=$(printf '%s\n' "$secrets_out" \
+             | sed -n 's/.*Node ID[^:]*: *\([A-Za-z0-9]*\).*/\1/p;T;q')
   [ -n "$OPERATOR" ] || die "Could not read the operator address from secrets output"
 
   kv "Operator address" "$B$OPERATOR$R"
