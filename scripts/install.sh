@@ -113,7 +113,9 @@ spin_start() {
 spin_stop() {
   [ -n "$spin_pid" ] && kill "$spin_pid" 2>/dev/null
   spin_pid=""
-  [ -t 1 ] && printf '\r\033[K'
+  # To the terminal, never to stdout: this is reached from cleanup, which fires inside
+  # the $( ) that captures a prompt's answer.
+  [ -t 1 ] && printf '\r\033[K' > /dev/tty 2>/dev/null
 
   return 0
 }
@@ -185,25 +187,41 @@ ask() {
   echo "${ans:-$2}"
 }
 
+# bash runs an EXIT trap when a $( ) subshell finishes, not only when the script does.
+# Every prompt here is read through $( ), so an unguarded handler fired on each one, and
+# anything it printed went to the subshell's stdout, which is precisely the text being
+# captured. That is where the stray brackets came from: escape codes from the handler
+# ("\033[K" from the spinner, "\033[?25h" for the cursor) landed inside the answer
+# instead of on the screen.
+#
+# So: refuse to run anywhere but the main shell, and never write to stdout. The terminal
+# is addressed directly, because stdout belongs to whoever is capturing it.
+MAIN_PID=$BASHPID
+
 cleanup() {
+  [ "${BASHPID:-$$}" = "$MAIN_PID" ] || return 0
   spin_stop
   stop_backup_server
-  # Leave the terminal as we found it: a read interrupted mid-keystroke can leave echo
-  # off, and then the shell the operator returns to is typing blind.
-  [ -t 0 ] && stty echo 2>/dev/null
-  printf '\033[?25h' 2>/dev/null   # cursor back on
+  # Leave the terminal as we found it: a read cancelled mid-keystroke leaves echo off,
+  # and the shell the operator lands back in would be typing blind.
+  if [ -e /dev/tty ]; then
+    stty echo < /dev/tty 2>/dev/null || true
+    printf '\033[?25h' > /dev/tty 2>/dev/null || true
+  fi
 
   return 0
 }
 
-# INT and TERM must actually end the run. A trap that only cleans up and returns hands
-# control straight back to the interrupted command: bash resumes, the read that was
-# cancelled reports failure, `|| ans=""` swallows it, and the loop asks again. Ctrl+C
-# then does nothing at all, which is exactly what it did.
+# INT and TERM must actually end the run. A handler that only tidies up and returns hands
+# control back to the interrupted command: the cancelled read reports failure, the
+# `|| ans=""` beside it swallows that, and the loop asks again. Ctrl+C then does nothing.
 on_interrupt() {
+  [ "${BASHPID:-$$}" = "$MAIN_PID" ] || exit 130
   cleanup
-  printf '\n  %sInterrupted.%s Nothing is lost: the node keeps running as a service, and\n' "$SOFT" "$R" >&2
-  printf '  re-running the installer picks up where it left off.\n\n' >&2
+  {
+    printf '\n  Interrupted. Nothing is lost: the node keeps running as a service,\n'
+    printf '  and re-running the installer picks up where it left off.\n\n'
+  } >&2
   exit 130
 }
 
