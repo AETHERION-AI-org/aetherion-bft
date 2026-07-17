@@ -327,6 +327,75 @@ preflight() {
 }
 
 # ---------------------------------------------------------------------------
+# host tuning
+# ---------------------------------------------------------------------------
+# A node is a database that gossips: it holds thousands of files open, talks to dozens of
+# peers, and writes logs forever. Defaults are tuned for none of that.
+#
+# Everything here is either something we watched go wrong, or standard practice for this
+# shape of workload. Nothing is applied that the node does not actually need, and every
+# change is a drop-in file, so it is visible and removable.
+tune_host() {
+  step "Host tuning"
+
+  # Logs. Watched on our own node: journald reached 3.9 GB with no ceiling, on the machine
+  # that also produced blocks. A full disk stops block production, and this is the quietest
+  # way to reach one.
+  mkdir -p /etc/systemd/journald.conf.d
+  cat > /etc/systemd/journald.conf.d/aetherion.conf <<'EOF'
+[Journal]
+SystemMaxUse=1G
+SystemKeepFree=5G
+MaxRetentionSec=1month
+EOF
+  systemctl restart systemd-journald 2>/dev/null || true
+  ok "Logs capped at 1G, always leaving 5G free"
+
+  # Kernel. libp2p keeps many concurrent connections and the chain DB keeps many files
+  # open; the defaults assume neither.
+  cat > /etc/sysctl.d/99-aetherion.conf <<'EOF'
+# Peer connections arrive in bursts, especially at startup while dialing the network.
+net.core.somaxconn = 4096
+net.ipv4.tcp_max_syn_backlog = 4096
+
+# Block gossip is bursty and latency-sensitive; the default socket buffers are sized for
+# neither.
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+
+# Peers come and go constantly, leaving sockets in TIME_WAIT.
+net.ipv4.tcp_fin_timeout = 20
+net.ipv4.tcp_tw_reuse = 1
+
+# The chain DB wants to stay in page cache. Swapping it out turns block import into disk
+# thrashing, and a validator that cannot import cannot sign.
+vm.swappiness = 10
+
+# The DB holds a lot of small files open at once.
+fs.file-max = 2097152
+EOF
+  sysctl --system >/dev/null 2>&1 || true
+  ok "Kernel tuned for a gossiping database"
+
+  # Time. Consensus is timestamped; a node whose clock drifts produces blocks its peers
+  # may refuse.
+  if command -v timedatectl >/dev/null; then
+    timedatectl set-ntp true 2>/dev/null || true
+    local synced
+    synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo "")
+    if [ "$synced" = "yes" ]; then
+      ok "Clock synchronised"
+    else
+      warn "Clock is not NTP-synchronised yet. Consensus is timestamped: fix this."
+    fi
+  fi
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # binary + genesis
 # ---------------------------------------------------------------------------
 install_binary() {
@@ -925,7 +994,26 @@ ExecStart=$BIN server --data-dir $DATA_DIR --chain $HOME_DIR/genesis.json \\
   --json-rpc-batch-request-limit 1000$seal_flag --log-level INFO
 Restart=always
 RestartSec=5
+
+# The chain DB keeps thousands of files open; the default 1024 is not close.
 LimitNOFILE=65535
+LimitNPROC=65535
+
+# The node needs its own directory and the network. It does not need the rest of the
+# machine, and it runs as root, so say so explicitly rather than trusting it to behave.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=$HOME_DIR
+
+# Never let the OOM killer pick the node first: it is the largest process on the box by
+# design, and killing it stops block production.
+OOMScoreAdjust=-500
+
 StandardOutput=journal
 StandardError=journal
 
@@ -978,6 +1066,7 @@ main() {
   printf '  %sIt writes to %s and installs a systemd service.%s\n' "$GREY" "$HOME_DIR" "$R"
 
   preflight
+  tune_host
 
   step "Node type"
   printf '  %s1%s  Full node    %s— syncs, serves RPC, relays blocks. No stake needed.%s\n' "$B" "$R" "$GREY" "$R"
