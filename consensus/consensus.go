@@ -35,6 +35,10 @@ type Consensus interface {
 	// GetSyncProgression retrieves the current sync progression, if any
 	GetSyncProgression() *progress.Progression
 
+	// GetPeerHeights retrieves the latest block of each peer the consensus's syncer is
+	// tracking, keyed by peer id. Returns nil when the consensus has no syncer.
+	GetPeerHeights() map[string]uint64
+
 	// GetBridgeProvider returns an instance of BridgeDataProvider
 	GetBridgeProvider() BridgeDataProvider
 

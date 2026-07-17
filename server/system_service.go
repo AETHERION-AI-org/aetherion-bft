@@ -131,12 +131,24 @@ func (s *systemService) getPeer(id peer.ID) (*proto.Peer, error) {
 	}
 
 	peer := &proto.Peer{
-		Id:        id.String(),
-		Protocols: protocols,
-		Addrs:     addrs,
+		Id:          id.String(),
+		Protocols:   protocols,
+		Addrs:       addrs,
+		LatestBlock: s.peerLatestBlock(id),
 	}
 
 	return peer, nil
+}
+
+// peerLatestBlock reports the peer's last announced block, or zero if it has not
+// announced one. Read from the consensus's syncer, which tracks this anyway to pick a
+// sync target: the peer is not asked anything it has not already gossiped.
+func (s *systemService) peerLatestBlock(id peer.ID) uint64 {
+	if s.server.consensus == nil {
+		return 0
+	}
+
+	return s.server.consensus.GetPeerHeights()[id.String()]
 }
 
 // PeersList implements the 'peers list' operator service

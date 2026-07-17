@@ -51,8 +51,9 @@ func (p *statusParams) initPeerInfo(grpcAddress string) error {
 
 func (p *statusParams) getResult() command.CommandResult {
 	return &PeersStatusResult{
-		ID:        p.peerStatus.Id,
-		Protocols: p.peerStatus.Protocols,
-		Addresses: p.peerStatus.Addrs,
+		ID:          p.peerStatus.Id,
+		Protocols:   p.peerStatus.Protocols,
+		Addresses:   p.peerStatus.Addrs,
+		LatestBlock: p.peerStatus.LatestBlock,
 	}
 }

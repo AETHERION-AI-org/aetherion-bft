@@ -42,6 +42,22 @@ func (m *PeerMap) Put(peers ...*NoForkPeer) {
 	}
 }
 
+// Heights returns the latest block each known peer has announced, keyed by peer id.
+// The map is a snapshot: entries the syncer learns about later are not reflected.
+func (m *PeerMap) Heights() map[string]uint64 {
+	heights := make(map[string]uint64)
+
+	m.Range(func(_, value interface{}) bool {
+		if peer, ok := value.(*NoForkPeer); ok {
+			heights[peer.ID.String()] = peer.Number
+		}
+
+		return true
+	})
+
+	return heights
+}
+
 // Remove removes a peer from heap if it exists
 func (m *PeerMap) Remove(peerID peer.ID) {
 	m.Delete(peerID.String())

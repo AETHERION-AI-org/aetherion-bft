@@ -241,6 +241,12 @@ func (d *Dev) GetSyncProgression() *progress.Progression {
 	return nil
 }
 
+// GetPeerHeights returns nil: this consensus runs without a syncer, so it tracks no
+// peers and has no heights to report.
+func (d *Dev) GetPeerHeights() map[string]uint64 {
+	return nil
+}
+
 func (d *Dev) Close() error {
 	close(d.closeCh)
 

@@ -249,6 +249,17 @@ func (i *backendIBFT) GetSyncProgression() *progress.Progression {
 	return i.syncer.GetSyncProgression()
 }
 
+// GetPeerHeights returns the latest block of each peer the syncer is tracking, keyed by
+// peer id. The syncer keeps this to choose who to sync from, so this only surfaces what
+// the node already observed. Nil before the syncer exists.
+func (i *backendIBFT) GetPeerHeights() map[string]uint64 {
+	if i.syncer == nil {
+		return nil
+	}
+
+	return i.syncer.GetPeerHeights()
+}
+
 func (i *backendIBFT) startConsensus() {
 	var (
 		newBlockSub   = i.blockchain.SubscribeEvents()

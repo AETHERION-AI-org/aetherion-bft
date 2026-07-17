@@ -59,6 +59,10 @@ message Peer {
   string id = 1;
   repeated string protocols = 2;
   repeated string addrs = 3;
+  // The peer's latest block, as this node last heard it over the sync protocol. Zero
+  // when the peer has not announced one yet. The node already tracks this to decide who
+  // to sync from; reporting it costs nothing and asks the peer for nothing.
+  uint64 latest_block = 4;
 }
 
 message PeersAddRequest {

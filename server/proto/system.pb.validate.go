@@ -139,7 +139,7 @@ type BlockchainEventMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m BlockchainEventMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -273,7 +273,7 @@ type ServerStatusMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m ServerStatusMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -360,6 +360,8 @@ func (m *Peer) validate(all bool) error {
 
 	// no validation rules for Id
 
+	// no validation rules for LatestBlock
+
 	if len(errors) > 0 {
 		return PeerMultiError(errors)
 	}
@@ -373,7 +375,7 @@ type PeerMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m PeerMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -484,7 +486,7 @@ type PeersAddRequestMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m PeersAddRequestMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -588,7 +590,7 @@ type PeersAddResponseMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m PeersAddResponseMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -699,7 +701,7 @@ type PeersStatusRequestMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m PeersStatusRequestMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -837,7 +839,7 @@ type PeersListResponseMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m PeersListResponseMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -941,7 +943,7 @@ type BlockByNumberRequestMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m BlockByNumberRequestMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1045,7 +1047,7 @@ type BlockResponseMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m BlockResponseMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1149,7 +1151,7 @@ type ExportRequestMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m ExportRequestMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1256,7 +1258,7 @@ type ExportEventMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m ExportEventMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1360,7 +1362,7 @@ type BlockchainEvent_HeaderMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m BlockchainEvent_HeaderMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
@@ -1466,7 +1468,7 @@ type ServerStatus_BlockMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m ServerStatus_BlockMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}

@@ -88,6 +88,13 @@ func (s *syncer) Close() error {
 }
 
 // initializePeerMap fetches peer statuses and initializes map
+// GetPeerHeights returns the latest block of every peer this node is tracking, keyed by
+// peer id. The syncer already maintains this to decide who is worth syncing from, so
+// answering costs nothing and asks the peers for nothing they have not already gossiped.
+func (s *syncer) GetPeerHeights() map[string]uint64 {
+	return s.peerMap.Heights()
+}
+
 func (s *syncer) initializePeerMap() {
 	peerStatuses := s.syncPeerClient.GetConnectedPeerStatuses()
 	s.peerMap.Put(peerStatuses...)

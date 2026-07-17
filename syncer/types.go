@@ -68,6 +68,8 @@ type Syncer interface {
 	GetSyncProgression() *progress.Progression
 	// HasSyncPeer returns whether syncer has the peer syncer can sync with
 	HasSyncPeer() bool
+	// GetPeerHeights returns the latest block of each tracked peer, keyed by peer id
+	GetPeerHeights() map[string]uint64
 	// Sync starts routine to sync blocks
 	Sync(func(*types.FullBlock) bool) error
 }
