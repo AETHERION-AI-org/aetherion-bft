@@ -21,6 +21,28 @@ EXPLORER="https://explorer.aetherion-ai.org"
 # Bootnodes are not a server flag: the node reads them from genesis.json, which
 # ships in this repository with the network's own list.
 
+SELF_URL="https://raw.githubusercontent.com/$REPO/main/scripts/install.sh"
+
+# Piped into bash (`curl ... | sudo bash`), this script *is* bash's stdin. The prompts
+# then compete with the script text for the same input, and with sudo's use_pty in the
+# middle the keyboard may never reach a read at all: keystrokes are swallowed and Ctrl+C
+# goes nowhere. Which of those happens depends on the sudo build and the terminal, which
+# is exactly the kind of thing that works on one machine and not the next.
+#
+# So don't rely on it. If we were piped in and a human is meant to answer, fetch a real
+# copy and hand over to it. Then stdin is a terminal like it should be, and the same
+# one-liner works everywhere.
+if [ ! -t 0 ] && [ -z "${AETH_UNATTENDED:-}" ] && [ -z "${AETH_REEXEC:-}" ]; then
+  if [ -e /dev/tty ] && (exec 3< /dev/tty) 2>/dev/null; then
+    _self="$(mktemp /tmp/aetherion-install.XXXXXX)"
+    if curl -fsSL "$SELF_URL" -o "$_self" 2>/dev/null && [ -s "$_self" ]; then
+      export AETH_REEXEC=1
+      exec bash "$_self" "$@" < /dev/tty
+    fi
+    rm -f "$_self"
+  fi
+fi
+
 HOME_DIR="/opt/aetherion"
 DATA_DIR="$HOME_DIR/data"
 BIN="/usr/local/bin/aetherion-bft"
@@ -614,8 +636,20 @@ wei_to_aeth() { python3 -c "print(f'{int('${1:-0x0}',16)/10**18:,.4f}')" 2>/dev/
 
 await_funding() {
   printf '\n'
+
+  # Say what is already locked before asking about locking more. On a resumed run the
+  # screen otherwise reads as though it is about to charge the operator a second time,
+  # which is a fair thing to panic about. Read it from the chain, which is the only
+  # place that knows.
+  local already
+  already=$(current_stake_wei "$OPERATOR")
+  if [ -n "$already" ] && [ "$already" != "0" ]; then
+    ok "Already locked on-chain: $(python3 -c "print(f'{$already/10**18:,.4f}')") AETH"
+    info "Nothing below will lock that again. Only a shortfall is ever topped up."
+  fi
+
   local want
-  want=$(ask "How much AETH will you lock as stake? (minimum $MIN_STAKE)" "${AETH_STAKE:-$MIN_STAKE}")
+  want=$(ask "Target stake in AETH, counting anything already locked (min $MIN_STAKE)" "${AETH_STAKE:-$MIN_STAKE}")
   if ! python3 -c "import sys;sys.exit(0 if float('$want') >= $MIN_STAKE else 1)" 2>/dev/null; then
     warn "Below the $MIN_STAKE AETH minimum. Using $MIN_STAKE."
     want=$MIN_STAKE
