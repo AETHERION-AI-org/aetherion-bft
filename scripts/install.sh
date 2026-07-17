@@ -187,6 +187,30 @@ ask() {
   echo "${ans:-$2}"
 }
 
+# ---------------------------------------------------------------------------
+# resumable state
+# ---------------------------------------------------------------------------
+# Bringing a validator up takes hours, nearly all of it syncing, so an interrupted run
+# is the normal case: a dropped connection, a reboot, an impatient ^C. Re-running the
+# same command resumes rather than restarts. Steps record themselves once they have
+# genuinely finished, and finished steps are skipped.
+#
+# The state file is a convenience, never the authority. Anything that costs money or
+# touches the chain re-checks the chain before acting, so a stale local file can never
+# cause a second payment.
+STATE_FILE="$HOME_DIR/.install-state"
+
+mark_done() {
+  mkdir -p "$HOME_DIR" 2>/dev/null || true
+  grep -qxF "$1" "$STATE_FILE" 2>/dev/null || echo "$1" >> "$STATE_FILE"
+
+  return 0
+}
+
+is_done() {
+  grep -qxF "$1" "$STATE_FILE" 2>/dev/null
+}
+
 # bash runs an EXIT trap when a $( ) subshell finishes, not only when the script does.
 # Every prompt here is read through $( ), so an unguarded handler fired on each one, and
 # anything it printed went to the subshell's stdout, which is precisely the text being
