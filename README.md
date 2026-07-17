@@ -36,14 +36,14 @@
 
 ## ✨ Highlights
 
-|             | Capability | What it means |
-| :---------: | :--------- | :------------ |
-| ⚡ | **AETHERION BFT consensus** | Optimistic fast-path validator agreement with single-round finality for the vast majority of blocks. Byzantine fault tolerant, with deterministic guarantees. |
-| 🔷 | **EVM-equivalent execution** | Existing Ethereum contracts, tooling and wallets run unchanged. No rewrites, no surprises. |
-| 🪙 | **Native AETH** | AETH is the network's native asset: gas, staking, governance and rewards, all in one unit. |
-| 📉 | **Deterministic emission** | A fixed genesis supply and a per-epoch reward that only ever halves, on a published schedule. Monetary policy is a formula, not a meeting. |
-| 🛡️ | **Capped validator power** | Stake-weighted rewards with hard-capped voting weight, so no operator can seize the chain regardless of stake. |
-| 🔐 | **BLS-secured validator set** | Proof-of-possession verified BLS keys secure the validator set and every epoch transition. |
+|     | Capability                    | What it means                                                                                                                                                 |
+| :-: | :---------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ⚡  | **AETHERION BFT consensus**   | Optimistic fast-path validator agreement with single-round finality for the vast majority of blocks. Byzantine fault tolerant, with deterministic guarantees. |
+| 🔷  | **EVM-equivalent execution**  | Existing Ethereum contracts, tooling and wallets run unchanged. No rewrites, no surprises.                                                                    |
+| 🪙  | **Native AETH**               | AETH is the network's native asset: gas, staking, governance and rewards, all in one unit.                                                                    |
+| 📉  | **Deterministic emission**    | A fixed genesis supply and a per-epoch reward that only ever halves, on a published schedule. Monetary policy is a formula, not a meeting.                    |
+| 🛡️  | **Capped validator power**    | Stake-weighted rewards with hard-capped voting weight, so no operator can seize the chain regardless of stake.                                                |
+| 🔐  | **BLS-secured validator set** | Proof-of-possession verified BLS keys secure the validator set and every epoch transition.                                                                    |
 
 <br>
 
@@ -51,17 +51,17 @@
 
 <div align="center">
 
-| Parameter | Value |
-| :-- | :-- |
-| **Network** | Aetherion Network |
-| **Chain ID** | `100892` |
-| **Native currency** | `AETH` (18 decimals) |
-| **Consensus** | AETHERION BFT |
-| **Total supply** | `21,000,000 AETH`, fixed at genesis |
-| **Epoch length** | `300` blocks · ~10 minutes |
-| **Emission** | `50 AETH` / epoch, halving every `210,240` epochs (~4 years) |
-| **Public RPC** | <https://rpc.aetherion-ai.org> |
-| **Explorer** | <https://explorer.aetherion-ai.org> |
+| Parameter           | Value                                                        |
+| :------------------ | :----------------------------------------------------------- |
+| **Network**         | Aetherion Network                                            |
+| **Chain ID**        | `100892`                                                     |
+| **Native currency** | `AETH` (18 decimals)                                         |
+| **Consensus**       | AETHERION BFT                                                |
+| **Total supply**    | `21,000,000 AETH`, fixed at genesis                          |
+| **Epoch length**    | `300` blocks · ~10 minutes                                   |
+| **Emission**        | `50 AETH` / epoch, halving every `210,240` epochs (~4 years) |
+| **Public RPC**      | <https://rpc.aetherion-ai.org>                               |
+| **Explorer**        | <https://explorer.aetherion-ai.org>                          |
 
 </div>
 
@@ -193,12 +193,12 @@ Choose **Validator** and the installer does the rest: it shows you the address t
 waits for the AETH to arrive, registers you on-chain, waits until your node has caught up
 with the chain, and locks your stake.
 
-| Step | What happens |
-| :-- | :-- |
-| **Fund** | You send at least `1000 AETH` to the operator address it prints. The deposit is locked, not spent, and can be unbonded later. |
+| Step         | What happens                                                                                                                    |
+| :----------- | :------------------------------------------------------------------------------------------------------------------------------ |
+| **Fund**     | You send at least `1000 AETH` to the operator address it prints. The deposit is locked, not spent, and can be unbonded later.   |
 | **Register** | The node calls `registerSelf(blsKey, proofOfPossession)`. The registry verifies the proof against the network's BLS precompile. |
-| **Sync** | The node replays the chain. This takes hours. |
-| **Stake** | The deposit is locked and you join the block-producing set at the next epoch boundary. |
+| **Sync**     | The node replays the chain. This takes hours.                                                                                   |
+| **Stake**    | The deposit is locked and you join the block-producing set at the next epoch boundary.                                          |
 
 > [!IMPORTANT]
 > Staking waits for your node to finish syncing, and that is not a formality. A validator
@@ -248,12 +248,12 @@ The per-epoch reward can only ever shrink. It is arithmetic, not a decision.
 
 <div align="center">
 
-| Era | Reward / epoch | Approx. duration |
-| :-: | :-- | :-- |
-| **1** | `50.0000 AETH` | now → ~4 years |
-| **2** | `25.0000 AETH` | ~4 → ~8 years |
-| **3** | `12.5000 AETH` | ~8 → ~12 years |
-| **4** | `6.2500 AETH` | ~12 → ~16 years |
+| Era   | Reward / epoch                 | Approx. duration        |
+| :---: | :----------------------------- | :---------------------- |
+| **1** | `50.0000 AETH`                 | now → ~4 years          |
+| **2** | `25.0000 AETH`                 | ~4 → ~8 years           |
+| **3** | `12.5000 AETH`                 | ~8 → ~12 years          |
+| **4** | `6.2500 AETH`                  | ~12 → ~16 years         |
 | **…** | halving every `210,240` epochs | → `21,000,000 AETH` cap |
 
 </div>
@@ -262,18 +262,18 @@ The per-epoch reward can only ever shrink. It is arithmetic, not a decision.
 
 ## 📁 Repository layout
 
-| Path | Contents |
-| :-- | :-- |
-| `consensus/` | AETHERION BFT engine, validator set, epoch logic |
-| `state/` | EVM execution, state trie, emission & halving schedule |
-| `blockchain/` | Block import, storage, canonical chain |
-| `txpool/` | Transaction pool and gossip |
-| `jsonrpc/` | JSON-RPC and WebSocket API |
-| `network/` | libp2p peer-to-peer networking and discovery |
-| `crypto/` · `bls/` | ECDSA and BLS cryptography, proof-of-possession |
-| `command/` | The `aetherion-bft` CLI (`server`, `secrets`, `genesis`, …) |
-| `server/` | Node assembly and lifecycle |
-| `contracts/` | System and network contract bindings |
+| Path               | Contents                                                    |
+| :----------------- | :---------------------------------------------------------- |
+| `consensus/`       | AETHERION BFT engine, validator set, epoch logic            |
+| `state/`           | EVM execution, state trie, emission & halving schedule      |
+| `blockchain/`      | Block import, storage, canonical chain                      |
+| `txpool/`          | Transaction pool and gossip                                 |
+| `jsonrpc/`         | JSON-RPC and WebSocket API                                  |
+| `network/`         | libp2p peer-to-peer networking and discovery                |
+| `crypto/` · `bls/` | ECDSA and BLS cryptography, proof-of-possession             |
+| `command/`         | The `aetherion-bft` CLI (`server`, `secrets`, `genesis`, …) |
+| `server/`          | Node assembly and lifecycle                                 |
+| `contracts/`       | System and network contract bindings                        |
 
 <br>
 
