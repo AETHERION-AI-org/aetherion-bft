@@ -131,45 +131,84 @@ spin_stop() {
 # so the download dance protects nothing and only gets in the way.
 UNATTENDED="${AETH_UNATTENDED:-}"
 
-ask() {  # ask <prompt> <default>
+# Prompts write to /dev/tty, never to stdout: stdout is the answer, and these functions
+# are called inside $( ). Anything printed there ends up inside the value instead of on
+# screen, which is how escape codes leaked into the captured text as stray brackets.
+#
+# The terminal's own echo is off too. Reading with -s and printing the keystroke back by
+# hand is the only way the line looks the same whether the answer came from a keypress,
+# from Enter taking the default, or from the environment in an unattended run.
+
+# ask_key <prompt> <default> <valid-chars> -> one keystroke, no Enter needed
+ask_key() {
   local ans
-  # The answer is this function's stdout, so anything shown to the operator goes to
-  # stderr. (`read -p` already does this, which is why only this branch says so.)
   if [ -n "$UNATTENDED" ]; then
-    printf '  %s?%s %s %s[%s]%s\n' "$SOFT" "$R" "$1" "$D" "$2" "$R" >&2
+    printf '  %s?%s %s %s%s%s\n' "$SOFT" "$R" "$1" "$B" "$2" "$R" >&2
     echo "$2"
 
-    return
+    return 0
   fi
-  read -r -p "  ${SOFT}?${R} $1 ${D}[$2]${R} " ans </dev/tty || ans=""
+
+  printf '  %s?%s %s %s(Enter for %s)%s ' "$SOFT" "$R" "$1" "$D$GREY" "$2" "$R" > /dev/tty
+  while :; do
+    # Losing the tty (a dropped connection) must end the run, not silently accept the
+    # default. Only a real Enter, which reads successfully and returns nothing, does that.
+    if ! IFS= read -r -n 1 -s ans < /dev/tty; then
+      printf '\n' > /dev/tty
+      die "Lost the terminal. Re-run the installer to continue."
+    fi
+    [ -z "$ans" ] && ans="$2"
+    case "$ans" in
+      *[!"$3"]* ) continue ;;
+    esac
+    break
+  done
+  printf '%s%s%s\n' "$B" "$ans" "$R" > /dev/tty
+  echo "$ans"
+}
+
+# ask <prompt> <default> -> a typed answer, Enter to accept the default
+ask() {
+  local ans
+  if [ -n "$UNATTENDED" ]; then
+    printf '  %s?%s %s %s%s%s\n' "$SOFT" "$R" "$1" "$B" "$2" "$R" >&2
+    echo "$2"
+
+    return 0
+  fi
+
+  printf '  %s?%s %s %s(Enter for %s)%s ' "$SOFT" "$R" "$1" "$D$GREY" "$2" "$R" > /dev/tty
+  if ! IFS= read -r ans < /dev/tty; then
+    printf '\n' > /dev/tty
+    die "Lost the terminal. Re-run the installer to continue."
+  fi
   echo "${ans:-$2}"
 }
 
-# ---------------------------------------------------------------------------
-# resumable state
-# ---------------------------------------------------------------------------
-# Bringing a validator up takes hours, nearly all of it syncing, so an interrupted run
-# is the normal case and not an edge case: a dropped connection, a reboot, an impatient
-# ^C. Re-running the same one-liner resumes rather than restarts. Each step records
-# itself once it has genuinely finished, and steps that have already happened are
-# skipped instead of repeated.
-#
-# The state file is a convenience, never the authority. Anything that costs money or
-# touches the chain re-checks the chain itself before acting, because a stale local file
-# must never be able to cause a second payment.
-STATE_FILE="$HOME_DIR/.install-state"
+cleanup() {
+  spin_stop
+  stop_backup_server
+  # Leave the terminal as we found it: a read interrupted mid-keystroke can leave echo
+  # off, and then the shell the operator returns to is typing blind.
+  [ -t 0 ] && stty echo 2>/dev/null
+  printf '\033[?25h' 2>/dev/null   # cursor back on
 
-mark_done() {
-  mkdir -p "$HOME_DIR"
-  grep -qxF "$1" "$STATE_FILE" 2>/dev/null || echo "$1" >> "$STATE_FILE"
+  return 0
 }
 
-is_done() {
-  grep -qxF "$1" "$STATE_FILE" 2>/dev/null
+# INT and TERM must actually end the run. A trap that only cleans up and returns hands
+# control straight back to the interrupted command: bash resumes, the read that was
+# cancelled reports failure, `|| ans=""` swallows it, and the loop asks again. Ctrl+C
+# then does nothing at all, which is exactly what it did.
+on_interrupt() {
+  cleanup
+  printf '\n  %sInterrupted.%s Nothing is lost: the node keeps running as a service, and\n' "$SOFT" "$R" >&2
+  printf '  re-running the installer picks up where it left off.\n\n' >&2
+  exit 130
 }
 
-cleanup() { spin_stop; stop_backup_server; }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap on_interrupt INT TERM
 
 # ---------------------------------------------------------------------------
 # preflight
@@ -493,10 +532,10 @@ PY
 
   local a
   while :; do
-    a=$(ask "Have you downloaded and verified the backup? (yes/no)" "no")
-    case "${a,,}" in
-      yes|y) break ;;
-      *) printf '  %sTake your time. The link above stays live until you answer yes.%s\n' "$GREY" "$R" ;;
+    a=$(ask_key "Downloaded and verified it? y/n" "n" "ynYN")
+    case "$a" in
+      y|Y) break ;;
+      *) printf '  %sTake your time. The link stays live until you answer y.%s\n' "$GREY" "$R" ;;
     esac
   done
 
@@ -570,8 +609,12 @@ EOF
       return 0
     fi
     spin_stop
-    printf '\r\033[K  %s⠿%s waiting for funds  %s%s AETH%s / %s AETH  %s(%ss)%s' \
-      "$SOFT" "$R" "$B" "$aeth" "$R" "$MIN_STAKE" "$D$GREY" "$(( $(date +%s) - start ))" "$R"
+    if [ -t 1 ]; then
+      printf '\r\033[K  %s⠿%s waiting for funds  %s%s AETH%s / %s AETH  %s(%ss)%s' \
+        "$SOFT" "$R" "$B" "$aeth" "$R" "$STAKE_AETH" "$D$GREY" "$(( $(date +%s) - start ))" "$R"
+    elif [ $(( ($(date +%s) - start) % 60 )) -eq 0 ]; then
+      printf '  waiting for funds: %s / %s AETH\n' "$aeth" "$STAKE_AETH"
+    fi
     sleep 1
   done
 }
@@ -623,7 +666,7 @@ EOF
     chain_head=$(rpc_head "$RPC_PUBLIC")
     local_head=$(rpc_head "http://127.0.0.1:8545")
     if [ -z "$local_head" ] || [ -z "$chain_head" ]; then
-      printf '\r\033[K  %s⠿%s waiting for the node to answer' "$SOFT" "$R"
+      [ -t 1 ] && printf '\r\033[K  %s⠿%s waiting for the node to answer' "$SOFT" "$R"
       sleep 5
       continue
     fi
@@ -634,9 +677,13 @@ EOF
 
       return 0
     fi
-    printf '\r\033[K  %s⠿%s syncing  %s%s%s / %s  %s(%s behind, %ss elapsed)%s' \
-      "$SOFT" "$R" "$B" "$local_head" "$R" "$chain_head" "$D$GREY" "$lag" \
-      "$(( $(date +%s) - start ))" "$R"
+    if [ -t 1 ]; then
+      printf '\r\033[K  %s⠿%s syncing  %s%s%s / %s  %s(%s behind, %ss elapsed)%s' \
+        "$SOFT" "$R" "$B" "$local_head" "$R" "$chain_head" "$D$GREY" "$lag" \
+        "$(( $(date +%s) - start ))" "$R"
+    elif [ $(( ($(date +%s) - start) % 300 )) -lt 10 ]; then
+      printf '  syncing: %s / %s (%s behind)\n' "$local_head" "$chain_head" "$lag"
+    fi
     sleep 10
   done
 }
@@ -833,7 +880,7 @@ main() {
   step "Node type"
   printf '  %s1%s  Full node    %s— syncs, serves RPC, relays blocks. No stake needed.%s\n' "$B" "$R" "$GREY" "$R"
   printf '  %s2%s  Validator    %s— everything above, plus produces blocks and earns\n                  rewards. Locks at least %s AETH as stake.%s\n\n' "$B" "$R" "$GREY" "$MIN_STAKE" "$R"
-  local choice; choice=$(ask "Which one?" "${AETH_MODE:-1}")
+  local choice; choice=$(ask_key "Which one?" "${AETH_MODE:-1}" "12")
   case "$choice" in
     2|validator|v) MODE="validator" ;;
     *)             MODE="full" ;;
