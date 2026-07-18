@@ -18,14 +18,17 @@ import (
 	"github.com/umbracle/ethgo"
 )
 
-// This command registers this node as a validator, with nobody's permission.
+// This command registers this node as a validator and locks its stake in the same
+// transaction, with nobody's permission.
 //
 // The registry admits an operator on two facts it can verify itself: a BLS
 // proof-of-possession, which proves the caller holds the block-signing key, and being
 // msg.sender, which proves it holds the operator key. There is no application, no
-// approval and no waiting on a human. Registration alone grants nothing: the operator is
-// idle until it locks stake (see validator-stake), which is the barrier that actually
-// costs something.
+// approval and no waiting on a human. registerSelf is payable and requires locking at
+// least minStake in the same call: that deposit both makes the operator active
+// immediately and prices the roster, so the permissionless path cannot be spam-grown to
+// bloat the per-epoch validator-set scan the consensus layer runs. Adding more stake
+// later, or staking after a governance registerValidator, is done with validator-stake.
 //
 // Both keys are read locally, used to sign, and never printed or transmitted.
 
@@ -39,6 +42,7 @@ type registerParams struct {
 	configPath  string
 	jsonRPC     string
 	registryStr string
+	amountStr   string
 	chainID     uint64
 	insecure    bool
 }
@@ -48,7 +52,7 @@ var regParams = &registerParams{}
 func GetRegisterCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "validator-register",
-		Short: "Register this node as a validator (permissionless, no approval needed)",
+		Short: "Register this node as a validator and lock its stake (permissionless, no approval needed)",
 		Run:   runRegisterCommand,
 	}
 
@@ -60,6 +64,8 @@ func GetRegisterCommand() *cobra.Command {
 		"the JSON-RPC endpoint to submit the registration through")
 	cmd.Flags().StringVar(&regParams.registryStr, "registry", "",
 		"the AetherionValidatorRegistry proxy address")
+	cmd.Flags().StringVar(&regParams.amountStr, "amount", "",
+		"how much AETH to lock as stake in the same call, in wei (must be >= minStake)")
 	cmd.Flags().Uint64Var(&regParams.chainID, "chain-id", 100892,
 		"the chain id the proof-of-possession is bound to")
 	cmd.Flags().BoolVar(&regParams.insecure, "insecure", false,
@@ -125,6 +131,47 @@ func runRegisterCommand(cmd *cobra.Command, _ []string) {
 		return
 	}
 
+	// registerSelf is payable and rejects anything below minStake, so the deposit is part
+	// of the same call that whitelists the operator. Parse and preflight it before signing.
+	amount, ok := new(big.Int).SetString(regParams.amountStr, 10)
+	if !ok || amount.Sign() <= 0 {
+		outputter.SetError(fmt.Errorf("invalid --amount %q: expected a positive integer in wei",
+			regParams.amountStr))
+
+		return
+	}
+
+	// Preflight against the registry's own rules, so an operator learns why the call would
+	// revert without paying gas to find out.
+	minStake, err := readUint(relayer, operator, registry, minStakeSelector)
+	if err != nil {
+		outputter.SetError(fmt.Errorf("failed to read minStake: %w", err))
+
+		return
+	}
+
+	if amount.Cmp(minStake) < 0 {
+		outputter.SetError(fmt.Errorf(
+			"amount %s wei is below the registry minimum of %s wei", amount, minStake))
+
+		return
+	}
+
+	balance, err := relayer.Client().Eth().GetBalance(account.Ecdsa.Address(), ethgo.Latest)
+	if err != nil {
+		outputter.SetError(fmt.Errorf("failed to read operator balance: %w", err))
+
+		return
+	}
+
+	if balance.Cmp(amount) < 0 {
+		outputter.SetError(fmt.Errorf(
+			"operator %s holds %s wei, which is less than the %s wei it is trying to lock",
+			operator, balance, amount))
+
+		return
+	}
+
 	// proofMessage = keccak256(abi.encode(operator, chainId, registry)), signed by the BLS
 	// key under the state-receiver domain. Identical to what validator-pop emits and to
 	// what AetherionValidatorRegistry._verifyProofOfPossession checks.
@@ -157,6 +204,7 @@ func runRegisterCommand(cmd *cobra.Command, _ []string) {
 		From:  account.Ecdsa.Address(),
 		To:    (*ethgo.Address)(&registry),
 		Input: input,
+		Value: amount,
 	}
 
 	receipt, err := relayer.SendTransaction(txn, account.Ecdsa)
@@ -172,10 +220,17 @@ func runRegisterCommand(cmd *cobra.Command, _ []string) {
 		return
 	}
 
+	total, err := readStake(relayer, operator, registry)
+	if err != nil {
+		total = amount // the deposit landed; only the confirmation read failed
+	}
+
 	outputter.SetCommandResult(&registerResult{
 		Operator:     operator.String(),
 		Registry:     registry.String(),
 		BLSPublicKey: hexEncode(blsKey),
+		Amount:       amount.String(),
+		TotalStake:   total.String(),
 		TxHash:       receipt.TransactionHash.String(),
 		BlockNumber:  receipt.BlockNumber,
 	})
@@ -224,6 +279,8 @@ type registerResult struct {
 	Operator     string `json:"operator"`
 	Registry     string `json:"registry"`
 	BLSPublicKey string `json:"blsPublicKey"`
+	Amount       string `json:"amount,omitempty"`
+	TotalStake   string `json:"totalStake,omitempty"`
 	TxHash       string `json:"txHash,omitempty"`
 	BlockNumber  uint64 `json:"blockNumber,omitempty"`
 	AlreadyDone  bool   `json:"alreadyRegistered,omitempty"`
@@ -238,21 +295,25 @@ func (r *registerResult) GetOutput() string {
 			fmt.Sprintf("Operator|%s", r.Operator),
 			fmt.Sprintf("Registry|%s", r.Registry),
 		}))
-		buffer.WriteString("\n\nNothing to do. Lock stake with validator-stake to start producing blocks.\n")
+		buffer.WriteString("\n\nNothing to do here. To add more stake — or to lock the first stake for " +
+			"a governance registration — use validator-stake.\n")
 
 		return buffer.String()
 	}
 
-	buffer.WriteString("\n[VALIDATOR REGISTERED]\n")
+	buffer.WriteString("\n[VALIDATOR REGISTERED AND STAKED]\n")
 	buffer.WriteString(helper.FormatKV([]string{
 		fmt.Sprintf("Operator|%s", r.Operator),
 		fmt.Sprintf("Registry|%s", r.Registry),
 		fmt.Sprintf("BLS public key|%s", r.BLSPublicKey),
+		fmt.Sprintf("Locked now (wei)|%s", r.Amount),
+		fmt.Sprintf("Total stake (wei)|%s", r.TotalStake),
 		fmt.Sprintf("Transaction|%s", r.TxHash),
 		fmt.Sprintf("Block|%d", r.BlockNumber),
 	}))
-	buffer.WriteString("\n\nThe chain verified the proof-of-possession against its BLS precompile.\n" +
-		"Registered but idle: lock stake with validator-stake to join the block-producing set.\n")
+	buffer.WriteString("\n\nThe chain verified the proof-of-possession against its BLS precompile and\n" +
+		"locked the stake in the same call. This node joins the block-producing set at the\n" +
+		"next epoch boundary, provided it is running with --seal.\n")
 
 	return buffer.String()
 }

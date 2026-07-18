@@ -20,7 +20,7 @@ REPO="AETHERION-AI-org/aetherion-bft"
 CHAIN_ID=100892
 REGISTRY="0x6ebA8468F754404C1c93ae94C2D1973683eb749A"
 MIN_STAKE=1000
-# Gas for the two transactions this node sends (register, stake). Generous on purpose:
+# Gas for the transaction this node sends to register-and-stake. Generous on purpose:
 # a validator that cannot pay for its own stake transaction is stuck.
 GAS_BUFFER=1
 RPC_PUBLIC="https://rpc.aetherion-ai.org"
@@ -787,8 +787,8 @@ await_funding() {
      ${SOFT}${B}${OPERATOR}${R}
 
   ${GREY}That is ${B}${STAKE_AETH}${R}${GREY} to stake plus ${B}${GAS_BUFFER}${R}${GREY} for gas. The stake is locked, not
-  spent: it stays yours and can be unbonded later. The gas pays for the two
-  transactions this node sends to join.
+  spent: it stays yours and can be unbonded later. The gas pays for the
+  transaction this node sends to register and stake.
 
   Until it arrives the node still runs as a full node, serving RPC and relaying
   blocks, but it does not seal them or earn rewards.
@@ -927,37 +927,20 @@ blsPublicKey        = $bls
 proofOfPossession   = $pop
 registry            = $REGISTRY
 
-Governance calls: registerValidator(operator, blsPublicKey, proofOfPossession)
-Then this node locks its own stake (>= $MIN_STAKE AETH) from the operator address.
+Self-service: registerSelf(blsPublicKey, proofOfPossession) is payable — send >= $MIN_STAKE
+              AETH in the same call from the operator address (registers and stakes at once).
+Governance:   registerValidator(operator, blsPublicKey, proofOfPossession) [onlyOwner],
+              then the operator locks stake with validator-stake.
 EOF
   chmod 600 "$HOME_DIR/validator-registration.txt"
 
-  # Registration is permissionless: the chain checks the proof-of-possession and that
-  # the caller is the operator, and that is the whole gate. Nobody is asked, nothing is
-  # approved, and there is no queue to wait in.
-  if is_whitelisted "$OPERATOR"; then
-    ok "Already registered"
-  else
-    step "Registering on-chain"
-    spin_start "Registering (the chain verifies your proof-of-possession)"
-    local rout
-    if rout=$("$BIN" validator-register --data-dir "$DATA_DIR" --registry "$REGISTRY" \
-              --chain-id "$CHAIN_ID" --jsonrpc "$RPC_PUBLIC" --insecure 2>&1); then
-      spin_stop
-      ok "Registered"
-      printf '%s\n' "$rout" | sed -n 's/^\(Transaction\|Block\)/  &/p'
-    else
-      spin_stop
-      warn "Registration failed:"
-      printf '%s\n' "$rout" | tail -2 | sed 's/^/    /'
-      info "Your proof-of-possession is saved in $HOME_DIR/validator-registration.txt"
-      return
-    fi
-  fi
-
+  # Staking makes this node an active validator, and registerSelf now locks the stake in
+  # the same call — so registration, too, is gated on being caught up. An unsynced node
+  # that joins the set cannot sign the blocks it is suddenly responsible for and can stall
+  # the chain (see await_sync). Sync first, then commit stake.
   await_sync
 
-  step "Locking stake"
+  step "Registering and staking"
 
   # Ask the chain, not the state file, what is already locked. A resumed run must never
   # be able to pay twice, and only the chain knows the truth about that.
@@ -981,22 +964,46 @@ EOF
     return 0
   fi
 
-  spin_start "Locking $(python3 -c "print(f'{$need_wei/10**18:,.4f}')") AETH as stake"
+  # Two paths to the same place. A fresh operator registers and stakes in one payable
+  # registerSelf call. One already on the roster — a resumed run, or a governance
+  # registerValidator — cannot registerSelf again (it reverts AlreadyRegistered), so it
+  # tops up through validator-stake instead.
   local out
-  if out=$("$BIN" validator-stake --data-dir "$DATA_DIR" --registry "$REGISTRY" \
-           --amount "$need_wei" --jsonrpc "$RPC_PUBLIC" --insecure 2>&1); then
-    spin_stop
-    ok "Stake locked"
-    mark_done "stake"
-    printf '%s\n' "$out" | sed -n 's/^\(Transaction\|Block\|Total stake\)/  &/p'
+  if is_whitelisted "$OPERATOR"; then
+    spin_start "Locking $(python3 -c "print(f'{$need_wei/10**18:,.4f}')") AETH as stake"
+    if out=$("$BIN" validator-stake --data-dir "$DATA_DIR" --registry "$REGISTRY" \
+             --amount "$need_wei" --jsonrpc "$RPC_PUBLIC" --insecure 2>&1); then
+      spin_stop
+      ok "Stake locked"
+      mark_done "stake"
+      printf '%s\n' "$out" | sed -n 's/^\(Transaction\|Block\|Total stake\)/  &/p'
+    else
+      spin_stop
+      warn "Could not lock the stake:"
+      printf '%s\n' "$out" | tail -2 | sed 's/^/    /'
+      info "Retry with:"
+      printf '     %s%s validator-stake --data-dir %s --registry %s --amount %s --insecure%s\n' \
+        "$GREY" "$BIN" "$DATA_DIR" "$REGISTRY" "$need_wei" "$R"
+      return
+    fi
   else
-    spin_stop
-    warn "Could not lock the stake:"
-    printf '%s\n' "$out" | tail -2 | sed 's/^/    /'
-    info "Retry with:"
-    printf '     %s%s validator-stake --data-dir %s --registry %s --amount %s --insecure%s\n' \
-      "$GREY" "$BIN" "$DATA_DIR" "$REGISTRY" "$need_wei" "$R"
-    return
+    spin_start "Registering and locking $(python3 -c "print(f'{$need_wei/10**18:,.4f}')") AETH (verifying your proof-of-possession)"
+    if out=$("$BIN" validator-register --data-dir "$DATA_DIR" --registry "$REGISTRY" \
+             --chain-id "$CHAIN_ID" --amount "$need_wei" --jsonrpc "$RPC_PUBLIC" --insecure 2>&1); then
+      spin_stop
+      ok "Registered and staked"
+      mark_done "stake"
+      printf '%s\n' "$out" | sed -n 's/^\(Transaction\|Block\|Total stake\|Locked now\)/  &/p'
+    else
+      spin_stop
+      warn "Registration failed:"
+      printf '%s\n' "$out" | tail -2 | sed 's/^/    /'
+      info "Your proof-of-possession is saved in $HOME_DIR/validator-registration.txt"
+      info "Retry with:"
+      printf '     %s%s validator-register --data-dir %s --registry %s --chain-id %s --amount %s --insecure%s\n' \
+        "$GREY" "$BIN" "$DATA_DIR" "$REGISTRY" "$CHAIN_ID" "$need_wei" "$R"
+      return
+    fi
   fi
 
   info "You join the block-producing set at the next epoch boundary (~10 minutes)."
