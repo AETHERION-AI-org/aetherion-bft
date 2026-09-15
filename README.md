@@ -42,7 +42,7 @@
 | 🔷  | **EVM-equivalent execution**  | Existing Ethereum contracts, tooling and wallets run unchanged. No rewrites, no surprises.                                                                    |
 | 🪙  | **Native AETH**               | AETH is the network's native asset: gas, staking, governance and rewards, all in one unit.                                                                    |
 | 📉  | **Deterministic emission**    | A fixed genesis supply and a per-epoch reward that only ever halves, on a published schedule. Monetary policy is a formula, not a meeting.                    |
-| 🛡️  | **Capped validator power**    | Stake-weighted rewards with hard-capped voting weight, so no operator can seize the chain regardless of stake.                                                |
+| 🛡️  | **Cappable validator power**  | Stake-weighted rewards, with a per-validator voting-weight cap the network can switch on by governance so no operator dominates regardless of stake. |
 | 🔐  | **BLS-secured validator set** | Proof-of-possession verified BLS keys secure the validator set and every epoch transition.                                                                    |
 
 <br>
