@@ -1107,7 +1107,21 @@ main() {
   step "Node type"
   printf '  %s1%s  Full node    %s— syncs, serves RPC, relays blocks. No stake needed.%s\n' "$B" "$R" "$GREY" "$R"
   printf '  %s2%s  Validator    %s— everything above, plus produces blocks and earns\n                  rewards. Locks at least %s AETH as stake.%s\n\n' "$B" "$R" "$GREY" "$MIN_STAKE" "$R"
-  local choice; choice=$(ask_key "Which one?" "${AETH_MODE:-1}" "12")
+  # A re-run on a machine that already has the service defaults to what that service is: its
+  # unit seals (validator) or it does not (full node). Defaulting to "full" on a validator
+  # rewrote the unit without --seal on an Enter — a quiet way to take a validator out of
+  # production. AETH_MODE still wins; a first install still defaults to a full node.
+  local default_mode="${AETH_MODE:-}" unit
+  if [ -z "$default_mode" ]; then
+    # Captured, then matched: `systemctl cat | grep -q` under pipefail reads as "no --seal"
+    # whenever grep closes the pipe first.
+    unit="$(systemctl cat "$SERVICE" 2>/dev/null || true)"
+    case "$unit" in
+      *"--seal"*) default_mode=2; info "Existing $SERVICE service seals blocks: defaulting to Validator" ;;
+      *ExecStart=*) default_mode=1; info "Existing $SERVICE service is a full node: defaulting to Full node" ;;
+    esac
+  fi
+  local choice; choice=$(ask_key "Which one?" "${default_mode:-1}" "12")
   case "$choice" in
     2|validator|v) MODE="validator" ;;
     *)             MODE="full" ;;

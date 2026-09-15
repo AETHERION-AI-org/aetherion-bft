@@ -109,6 +109,70 @@ flowchart LR
 
 <br>
 
+## ⬆️ Upgrading to v1.0.5 — rewards router fork at epoch 21025
+
+**Deadline: run v1.0.5 before block 6,307,500** (epoch 21025 × 300), expected around
+**2026-09-15 14:11 UTC** at ~2.06 s per block. From that epoch every epoch-ending block carries a
+system transaction that routes the staking share of the emission to native staking.
+
+| asset | sha256 |
+|---|---|
+| `aetherion-bft-linux-amd64` | `e277c79e989dbbdc4d52054c86cdda125b008df49c1bce6b37786c56b703045a` |
+| `aetherion-bft-linux-arm64` | `ed6fe783b0ab92efee21f6e297dc0b150e3a25a7d17914d50ab4b4062ba4fcfa` |
+
+**What happens to a node left on an older binary.** Nothing changes before the fork epoch —
+upgrading early is always safe. After it, an older node keeps importing blocks but refuses the
+epoch-ending blocks that carry the new transaction, so a validator on it stops helping to seal
+them. Its data is fine: do **not** wipe it — install v1.0.5 and restart the service, and it
+continues where it is.
+
+### Check your version and the current epoch
+
+```bash
+curl -s -X POST http://127.0.0.1:8545 -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"web3_clientVersion","params":[]}'   # must contain /v1.0.5/
+curl -s -X POST http://127.0.0.1:8545 -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'      # epoch = block / 300
+```
+
+### Update by hand
+
+```bash
+ARCH=amd64   # arm64 on ARM servers
+cd "$(mktemp -d)"
+curl -fsSLO https://github.com/AETHERION-AI-org/aetherion-bft/releases/download/v1.0.5/aetherion-bft-linux-$ARCH
+curl -fsSLO https://github.com/AETHERION-AI-org/aetherion-bft/releases/download/v1.0.5/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS            # must print: aetherion-bft-linux-$ARCH: OK
+sudo cp /usr/local/bin/aetherion-bft /usr/local/bin/aetherion-bft.previous
+sudo systemctl stop aetherion-node
+sudo mv aetherion-bft-linux-$ARCH /usr/local/bin/aetherion-bft && sudo chmod 0755 /usr/local/bin/aetherion-bft
+sudo systemctl start aetherion-node
+```
+
+Then check the version again and that the block number advances on two calls a few seconds apart.
+
+### Or re-run the installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AETHERION-AI-org/aetherion-bft/main/scripts/install.sh -o /tmp/aetherion-install.sh && sudo bash /tmp/aetherion-install.sh
+```
+
+It installs the latest release after verifying `SHA256SUMS`. On a machine that already runs the
+node it now offers the existing role as the default (a sealing service defaults to Validator);
+`AETH_MODE=validator` or `AETH_MODE=full` sets it explicitly.
+
+### Roll back
+
+Only before block 6,307,500:
+
+```bash
+sudo systemctl stop aetherion-node
+sudo cp /usr/local/bin/aetherion-bft.previous /usr/local/bin/aetherion-bft
+sudo systemctl start aetherion-node
+```
+
+<br>
+
 ## ⚡ Quickstart
 
 One command. It installs a full node by default, or walks you through becoming a
