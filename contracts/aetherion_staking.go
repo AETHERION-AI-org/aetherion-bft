@@ -30,7 +30,7 @@ import (
 // pre-fork behaviour: the validator set stays frozen (dummy stake manager) and no reward
 // transaction is ever proposed. Activating the fork requires editing the two addresses
 // and the fork epoch below to their real targets and cutting a new reproducible build,
-// rolled out to every node before AetherionStakingForkEpoch is reached. See PLAN.md and
+// rolled out to every node before AetherionStakingForkEpoch is reached. See docs/PLAN.md and
 // AETHERION_NETWORK_CUSTOMIZATION.md for the runbook.
 //
 // Deliberately `var`, not `const`: production never assigns to these after start (there

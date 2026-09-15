@@ -389,6 +389,15 @@ func (tp *syncerMock) HasSyncPeer() bool {
 	return args[0].(bool) //nolint
 }
 
+func (tp *syncerMock) GetPeerHeights() map[string]uint64 {
+	args := tp.Called()
+	if h, ok := args.Get(0).(map[string]uint64); ok {
+		return h
+	}
+
+	return nil
+}
+
 func (tp *syncerMock) Sync(func(*types.FullBlock) bool) error {
 	args := tp.Called()
 

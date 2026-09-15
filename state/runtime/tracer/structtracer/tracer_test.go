@@ -150,7 +150,7 @@ func TestStructTracerClear(t *testing.T) {
 
 	assert.Equal(
 		t,
-		StructTracer{
+		&StructTracer{
 			Config: Config{
 				EnableMemory:     true,
 				EnableStack:      true,
@@ -171,7 +171,7 @@ func TestStructTracerClear(t *testing.T) {
 			currentMemory: make([]([]byte), 1),
 			currentStack:  make([]([]*big.Int), 1),
 		},
-		tracer,
+		&tracer,
 	)
 }
 

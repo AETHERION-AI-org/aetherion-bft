@@ -61,6 +61,16 @@ var (
 		"before the Aetherion staking fork is active")
 	errValidatorRewardsTxAmountMismatch = errors.New("distribute validator rewards transaction " +
 		"amount does not match the locally computed epoch node reward")
+	errEpochRewardsTxDoesNotExist = errors.New("distribute epoch rewards transaction is " +
+		"not found in the epoch ending block, but the Aetherion rewards-router fork is active")
+	errEpochRewardsTxNotExpected = errors.New("didn't expect distribute epoch rewards " +
+		"transaction in a non epoch ending block")
+	errEpochRewardsTxSingleExpected = errors.New("only one distribute epoch rewards " +
+		"transaction is allowed in an epoch ending block")
+	errEpochRewardsTxForkNotActive = errors.New("found distribute epoch rewards transaction " +
+		"before the Aetherion rewards-router fork is active")
+	errEpochRewardsTxAmountMismatch = errors.New("distribute epoch rewards transaction " +
+		"reward does not match the locally computed epoch emission")
 	errProposalDontMatch = errors.New("failed to insert proposal, because the validated proposal " +
 		"is either nil or it does not match the received one")
 	errValidatorSetDeltaMismatch           = errors.New("validator set delta mismatch")
@@ -169,6 +179,10 @@ func (f *fsm) BuildProposal(currentRound uint64) ([]byte, error) {
 		}
 
 		if err := f.applyDistributeValidatorRewardsTx(); err != nil {
+			return nil, err
+		}
+
+		if err := f.applyDistributeEpochRewardsTx(); err != nil {
 			return nil, err
 		}
 	}
@@ -418,6 +432,81 @@ func (f *fsm) verifyDistributeValidatorRewardsTx(validatorRewardsTx *types.Trans
 	return nil
 }
 
+// applyDistributeEpochRewardsTx builds and writes the per-epoch user-rewards payout state
+// transaction, once the Aetherion rewards-router fork is active for this epoch and the
+// router is configured (contracts.IsAetherionRewardsRouterActive). Before that it is a
+// no-op, so a pre-fork/unconfigured binary behaves exactly as it does today.
+func (f *fsm) applyDistributeEpochRewardsTx() error {
+	if !contracts.IsAetherionRewardsRouterActive(f.epochNumber) {
+		return nil
+	}
+
+	tx, err := f.createDistributeEpochRewardsTx()
+	if err != nil {
+		return fmt.Errorf("failed to create distribute epoch rewards transaction: %w", err)
+	}
+
+	if err := f.blockBuilder.WriteTx(tx); err != nil {
+		return fmt.Errorf("failed to apply distribute epoch rewards transaction: %w", err)
+	}
+
+	return nil
+}
+
+// createDistributeEpochRewardsTx creates a StateTransaction which invokes
+// AetherionRewardsRouter.distributeEpochRewards(epochId, reward). The contract never
+// reverts for the system caller under any condition (idempotent per epoch; pause, no
+// configured sink, an unreadable distributor, empty pools and a sink that refuses the money
+// are all no-op skips with an event) — see contracts/contracts/AetherionRewardsRouter.sol —
+// and even if it somehow did, an EVM-level revert only marks this one receipt failed, it
+// does not invalidate the block (the same liveness property the emission and validator
+// reward paths rely on).
+//
+// The reward passed is the epoch's FULL emission, the same figure the emission distributor
+// splits. The router asks the distributor how that divides rather than being told each
+// pool's slice, so the shares cannot drift apart — unlike the validator payout above, which
+// restates its 12% as a Go constant. Both the epoch and the reward are pure functions of the
+// epoch number, so every validator reproduces the identical transaction.
+//
+// The method name is distributeEpochRewards rather than distribute on purpose: state
+// transactions are decoded by selector alone, and AetherionValidatorRewards already owns
+// distribute(uint256,uint256).
+func (f *fsm) createDistributeEpochRewardsTx() (*types.Transaction, error) {
+	input, err := (&contractsapi.DistributeEpochRewardsFn{
+		EpochID: new(big.Int).SetUint64(f.epochNumber),
+		Reward:  state.RawAetherionEpochReward(f.epochNumber),
+	}).EncodeAbi()
+	if err != nil {
+		return nil, err
+	}
+
+	return createStateTransactionWithData(f.Height(), contracts.AetherionRewardsRouterContract, input), nil
+}
+
+// verifyDistributeEpochRewardsTx recreates the user-rewards payout transaction locally and
+// compares hashes, so a proposer cannot slip in a different epoch or a different reward
+// than the schedule dictates.
+func (f *fsm) verifyDistributeEpochRewardsTx(epochRewardsTx *types.Transaction) error {
+	if !f.isEndOfEpoch {
+		return errEpochRewardsTxNotExpected
+	}
+
+	if !contracts.IsAetherionRewardsRouterActive(f.epochNumber) {
+		return errEpochRewardsTxForkNotActive
+	}
+
+	localTx, err := f.createDistributeEpochRewardsTx()
+	if err != nil {
+		return err
+	}
+
+	if epochRewardsTx.Hash != localTx.Hash {
+		return errEpochRewardsTxAmountMismatch
+	}
+
+	return nil
+}
+
 // ValidateCommit is used to validate that a given commit is valid
 func (f *fsm) ValidateCommit(signerAddr []byte, seal []byte, proposalHash []byte) error {
 	from := types.BytesToAddress(signerAddr)
@@ -565,11 +654,12 @@ func (f *fsm) ValidateSender(msg *proto.Message) error {
 
 func (f *fsm) VerifyStateTransactions(transactions []*types.Transaction) error {
 	var (
-		commitmentTxExists              bool
-		commitEpochTxExists             bool
-		distributeRewardsTxExists       bool
-		distributeEmissionTxExists      bool
-		validatorRewardsTxExists        bool
+		commitmentTxExists         bool
+		commitEpochTxExists        bool
+		distributeRewardsTxExists  bool
+		distributeEmissionTxExists bool
+		validatorRewardsTxExists   bool
+		epochRewardsTxExists       bool
 	)
 
 	for _, tx := range transactions {
@@ -647,6 +737,17 @@ func (f *fsm) VerifyStateTransactions(transactions []*types.Transaction) error {
 			if err := f.verifyDistributeValidatorRewardsTx(tx); err != nil {
 				return fmt.Errorf("error while verifying distribute validator rewards transaction. error: %w", err)
 			}
+		case *contractsapi.DistributeEpochRewardsFn:
+			if epochRewardsTxExists {
+				// only one distribute epoch rewards tx is allowed per epoch ending block
+				return errEpochRewardsTxSingleExpected
+			}
+
+			epochRewardsTxExists = true
+
+			if err := f.verifyDistributeEpochRewardsTx(tx); err != nil {
+				return fmt.Errorf("error while verifying distribute epoch rewards transaction. error: %w", err)
+			}
 		default:
 			return fmt.Errorf("invalid state transaction data type: %v", stateTxData)
 		}
@@ -675,6 +776,12 @@ func (f *fsm) VerifyStateTransactions(transactions []*types.Transaction) error {
 			// mandatory once the staking fork is active and the rewards contract is
 			// configured; before that this check does not apply at all
 			return errValidatorRewardsTxDoesNotExist
+		}
+
+		if contracts.IsAetherionRewardsRouterActive(f.epochNumber) && !epochRewardsTxExists {
+			// mandatory once the rewards-router fork is active and its contract is configured;
+			// before that this check does not apply at all
+			return errEpochRewardsTxDoesNotExist
 		}
 	}
 

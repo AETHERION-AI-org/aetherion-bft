@@ -1,3 +1,8 @@
+//go:build ruleguardtest
+
+// Runs the ruleguard rules through analysistest from golang.org/x/tools. The pinned x/tools
+// (v0.17.0) does not build with current Go toolchains; opt in with -tags ruleguardtest once
+// x/tools is bumped in a change that checks node binary parity.
 package gorules
 
 import (

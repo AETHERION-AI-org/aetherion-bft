@@ -29,7 +29,7 @@ import (
 // state root). Before activation the design default was "disabled" (types.ZeroAddress /
 // math.MaxUint64), which reproduced the pre-fork RewardPool-only behaviour; that mode is
 // retained only for tests, which override these vars to exercise both sides of the
-// boundary. See PLAN.md and AETHERION_NETWORK_CUSTOMIZATION.md for the full runbook.
+// boundary. See docs/PLAN.md and AETHERION_NETWORK_CUSTOMIZATION.md for the full runbook.
 //
 // Deliberately `var`, not `const`: production code never assigns to these after
 // process start (there is no runtime activation path, only a rebuild), but tests need
