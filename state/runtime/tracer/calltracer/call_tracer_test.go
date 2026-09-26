@@ -226,8 +226,10 @@ func TestCallTracer_CallEnd(t *testing.T) {
 		require.Equal(t, uint64(0), tracer.activeGas)
 		require.Equal(t, hex.EncodeToHex(output), tracer.activeCall.Output)
 		require.Equal(t, "0x0", tracer.activeCall.GasUsed)
-		require.True(t, tracer.stop)
-		require.Equal(t, err, tracer.reason)
+		// Geth-compatible: the failure is recorded on the frame, the trace goes on.
+		require.False(t, tracer.stop)
+		require.Nil(t, tracer.reason)
+		require.Equal(t, err.Error(), tracer.activeCall.Error)
 	})
 
 	t.Run("call_end_when_depth_is_1_no_error_activeAvailableGas_lower_than_start_gas", func(t *testing.T) {
@@ -260,8 +262,10 @@ func TestCallTracer_CallEnd(t *testing.T) {
 		require.Equal(t, uint64(0), tracer.activeGas)
 		require.Equal(t, hex.EncodeToHex(output), tracer.activeCall.Output)
 		require.Equal(t, hex.EncodeUint64(1000), tracer.activeCall.GasUsed)
-		require.True(t, tracer.stop)
-		require.Equal(t, err, tracer.reason)
+		// Geth-compatible: the failure is recorded on the frame, the trace goes on.
+		require.False(t, tracer.stop)
+		require.Nil(t, tracer.reason)
+		require.Equal(t, err.Error(), tracer.activeCall.Error)
 	})
 
 	t.Run("call_end_when_depth_is_2_no_error", func(t *testing.T) {
@@ -285,4 +289,41 @@ func TestCallTracer_CallEnd(t *testing.T) {
 		require.Equal(t, "0x0", tracer.activeCall.GasUsed)
 		require.Equal(t, uint64(500), tracer.activeCall.startGas)
 	})
+}
+
+func TestCallTracer_FailedInnerCall_KeepsTheTreeAndMarksTheFrame(t *testing.T) {
+	t.Parallel()
+
+	tracer := &CallTracer{}
+	from, to, inner := types.StringToAddress("1"), types.StringToAddress("2"), types.StringToAddress("3")
+
+	tracer.CallStart(1, from, to, 0, 1000, big.NewInt(0), nil)
+	tracer.CallStart(2, to, inner, 0, 500, big.NewInt(0), nil)
+	tracer.CallEnd(2, nil, errors.New("execution reverted"))
+	// The parent caught it and made another call that succeeded.
+	tracer.CallStart(2, to, inner, 0, 400, big.NewInt(5), nil)
+	tracer.CallEnd(2, nil, nil)
+	tracer.CallEnd(1, nil, errors.New("out of gas"))
+
+	result, err := tracer.GetResult()
+	require.NoError(t, err)
+
+	root, ok := result.(*Call)
+	require.True(t, ok)
+	require.Equal(t, "out of gas", root.Error)
+	require.Len(t, root.Calls, 2)
+	require.Equal(t, "execution reverted", root.Calls[0].Error)
+	require.Empty(t, root.Calls[1].Error)
+	require.Equal(t, hex.EncodeBig(big.NewInt(5)), root.Calls[1].Value)
+}
+
+func TestCallTracer_TimeoutStillCancels(t *testing.T) {
+	t.Parallel()
+
+	tracer := &CallTracer{}
+	timeout := errors.New("execution timeout")
+	tracer.Cancel(timeout)
+
+	_, err := tracer.GetResult()
+	require.Equal(t, timeout, err)
 }

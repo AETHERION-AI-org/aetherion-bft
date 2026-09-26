@@ -21,15 +21,18 @@ var (
 )
 
 type Call struct {
-	Type    string  `json:"type"`
-	From    string  `json:"from"`
-	To      string  `json:"to"`
-	Value   string  `json:"value,omitempty"`
-	Gas     string  `json:"gas"`
-	GasUsed string  `json:"gasUsed"`
-	Input   string  `json:"input"`
-	Output  string  `json:"output"`
-	Calls   []*Call `json:"calls,omitempty"`
+	Type    string `json:"type"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Value   string `json:"value,omitempty"`
+	Gas     string `json:"gas"`
+	GasUsed string `json:"gasUsed"`
+	Input   string `json:"input"`
+	Output  string `json:"output"`
+	// Error is the frame's failure ("execution reverted", "out of gas", ...), as geth's callTracer
+	// reports it. A failed frame no longer aborts the trace: explorers read the rest of the tree.
+	Error string  `json:"error,omitempty"`
+	Calls []*Call `json:"calls,omitempty"`
 
 	parent   *Call
 	startGas uint64
@@ -134,12 +137,17 @@ func (c *CallTracer) CallEnd(depth int, output []byte, err error) {
 	c.activeCall.GasUsed = hex.EncodeUint64(gasUsed)
 	c.activeGas = 0
 
-	if depth > 1 {
-		c.activeCall = c.activeCall.parent
+	// A failed call is part of the trace, not the end of it (geth-compatible): record it on its own
+	// frame and keep going. Before this, any failure — even a reverted inner call the parent caught —
+	// cancelled the whole trace, the node answered debug_traceTransaction / debug_traceBlock with a
+	// bare JSON-RPC error, and Blockscout stored the block without internal transactions (PR-313).
+	// Cancel stays for the request timeout only.
+	if err != nil {
+		c.activeCall.Error = err.Error()
 	}
 
-	if err != nil {
-		c.Cancel(err)
+	if depth > 1 {
+		c.activeCall = c.activeCall.parent
 	}
 }
 
