@@ -743,7 +743,11 @@ func (j *jsonRPCHub) TraceBlock(
 	for idx, tx := range block.Transactions {
 		tracer.Clear()
 
-		if _, err := transition.Apply(tx); err != nil {
+		// Write, not Apply: block import runs Write, which resets the refund counter,
+		// marks deleted objects and drains logs after every tx. Bare Apply carries them
+		// into the next tx, the gas accounting drifts from the block and a later tx fails
+		// with "gas limit reached in the pool".
+		if err := transition.Write(tx); err != nil {
 			return nil, err
 		}
 
@@ -789,8 +793,9 @@ func (j *jsonRPCHub) TraceTxn(
 			break
 		}
 
-		// Execute transactions without tracer until reaching the target transaction
-		if _, err := transition.Apply(tx); err != nil {
+		// Execute transactions without tracer until reaching the target transaction.
+		// Write, the block-import path, so the target sees exactly the block's state (see TraceBlock).
+		if err := transition.Write(tx); err != nil {
 			return nil, err
 		}
 	}
@@ -801,7 +806,7 @@ func (j *jsonRPCHub) TraceTxn(
 
 	transition.SetTracer(tracer)
 
-	if _, err := transition.Apply(targetTx); err != nil {
+	if err := transition.Write(targetTx); err != nil {
 		return nil, err
 	}
 

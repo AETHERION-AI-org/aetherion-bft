@@ -736,19 +736,25 @@ func (t *Transition) applyCall(
 	snapshot := t.state.Snapshot()
 	t.state.TouchAccount(c.Address)
 
+	// Open the frame before the value transfer: a transfer that fails still is a call
+	// (geth reports it with its error); opening after it left a failed plain transfer
+	// with no frame at all and debug_traceTransaction answered null.
+	t.captureCallStart(c, callType)
+
 	if callType == runtime.Call {
 		// Transfers only allowed on calls
 		if err := t.Transfer(c.Caller, c.Address, c.Value); err != nil {
-			return &runtime.ExecutionResult{
+			result := &runtime.ExecutionResult{
 				GasLeft: c.Gas,
 				Err:     err,
 			}
+			t.captureCallEnd(c, result)
+
+			return result
 		}
 	}
 
 	var result *runtime.ExecutionResult
-
-	t.captureCallStart(c, callType)
 
 	result = t.run(c, host)
 	if result.Failed() {
@@ -810,17 +816,22 @@ func (t *Transition) applyCreate(c *runtime.Contract, host runtime.Host) *runtim
 		}
 	}
 
+	// runtime.Create, not the opcode evm.CREATE (0xF0): the tracer maps call types, and
+	// the opcode made every creation frame "UNKNOWN", which explorers drop.
+	t.captureCallStart(c, runtime.Create)
+
 	// Transfer the value
 	if err := t.Transfer(c.Caller, c.Address, c.Value); err != nil {
-		return &runtime.ExecutionResult{
+		result := &runtime.ExecutionResult{
 			GasLeft: gasLimit,
 			Err:     err,
 		}
+		t.captureCallEnd(c, result)
+
+		return result
 	}
 
 	var result *runtime.ExecutionResult
-
-	t.captureCallStart(c, evm.CREATE)
 
 	defer func() {
 		// pass result to be set later
@@ -1179,6 +1190,12 @@ func (t *Transition) captureCallStart(c *runtime.Contract, callType runtime.Call
 		return
 	}
 
+	// A creation carries its init code in Code, not Input; tracers report it as input.
+	input := c.Input
+	if callType == runtime.Create || callType == runtime.Create2 {
+		input = c.Code
+	}
+
 	t.ctx.Tracer.CallStart(
 		c.Depth,
 		c.Caller,
@@ -1186,7 +1203,7 @@ func (t *Transition) captureCallStart(c *runtime.Contract, callType runtime.Call
 		int(callType),
 		c.Gas,
 		c.Value,
-		c.Input,
+		input,
 	)
 }
 
