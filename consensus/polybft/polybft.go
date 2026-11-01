@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
@@ -33,6 +34,10 @@ const (
 	minSyncPeers = 0 // standalone single-validator mode
 	pbftProto    = "/pbft/0.2"
 	bridgeProto  = "/bridge/0.2"
+
+	// sequenceOvertakenGrace is how long the head may sit at or past the running sequence's height
+	// before the sequence is treated as stuck. Longer than a block insert with its epoch hooks.
+	sequenceOvertakenGrace = 5 * time.Second
 )
 
 var (
@@ -612,7 +617,17 @@ func (p *Polybft) startConsensusProtocol() {
 	var (
 		sequenceCh   <-chan struct{}
 		stopSequence func()
+		// runningHeight is the height of the live sequence, zero when there is none.
+		runningHeight atomic.Uint64
 	)
+
+	// Buffered so the watcher never waits for this loop: a signal that waited through a long
+	// stopSequence would land on the next, healthy sequence.
+	overtakenCh := make(chan uint64, 1)
+
+	go watchOvertakenSequence(p.closeCh, &runningHeight,
+		func() uint64 { return p.blockchain.CurrentHeader().Number },
+		overtakenCh, sequenceOvertakenGrace, p.logger)
 
 	for {
 		latestHeader := p.blockchain.CurrentHeader()
@@ -627,6 +642,8 @@ func (p *Polybft) startConsensusProtocol() {
 
 		p.txPool.SetSealing(isValidator) // update tx pool
 
+		runningHeight.Store(0)
+
 		if isValidator {
 			// initialize FSM as a stateless ibft backend via runtime as an adapter
 			err = p.runtime.FSM()
@@ -637,27 +654,105 @@ func (p *Polybft) startConsensusProtocol() {
 			}
 
 			sequenceCh, stopSequence = p.ibft.runSequence(latestHeader.Number + 1)
+			runningHeight.Store(latestHeader.Number + 1)
 		}
 
 		now := time.Now().UTC()
 
-		select {
-		case <-syncerBlockCh:
-			if isValidator {
-				stopSequence()
-				p.logger.Info("canceled sequence", "sequence", latestHeader.Number+1)
-			}
-		case <-sequenceCh:
-		case <-p.closeCh:
-			if isValidator {
-				stopSequence()
-			}
+	wait:
+		for {
+			select {
+			case <-syncerBlockCh:
+				if isValidator {
+					stopSequence()
+					p.logger.Info("canceled sequence", "sequence", latestHeader.Number+1)
+				}
 
-			return
+				break wait
+			case height := <-overtakenCh:
+				if isValidator && overtakenIsCurrent(height, latestHeader.Number) {
+					stopSequence()
+					p.logger.Info("canceled sequence", "sequence", height)
+
+					break wait
+				}
+			case <-sequenceCh:
+				break wait
+			case <-p.closeCh:
+				if isValidator {
+					stopSequence()
+				}
+
+				return
+			}
 		}
 
 		p.logger.Debug("time to run the sequence", "seconds", time.Since(now))
 	}
+}
+
+// watchOvertakenSequence cancels a sequence whose height is already on the chain.
+//
+// go-ibft can lose the end of a sequence: when the round timer fires while runFin writes the block,
+// signalRoundDone is dropped and RunSequence moves to the next round of a height that is finished.
+// The syncer then answers "block already inserted" and raises no event, so nothing ends that
+// sequence. Two validators out of four caught like this leave no quorum for the next height, and
+// the chain stops for good (31.10, block 8132285). The signal carries the height, the main loop
+// drops it unless that height is still the one it runs.
+func watchOvertakenSequence(
+	closeCh <-chan struct{},
+	running *atomic.Uint64,
+	head func() uint64,
+	cancelCh chan<- uint64,
+	grace time.Duration,
+	logger hclog.Logger,
+) {
+	ticker := time.NewTicker(grace / 5)
+	defer ticker.Stop()
+
+	var (
+		overtaken uint64
+		since     time.Time
+	)
+
+	for {
+		select {
+		case <-closeCh:
+			return
+		case now := <-ticker.C:
+			height := running.Load()
+			if height == 0 || head() < height {
+				overtaken = 0
+
+				continue
+			}
+
+			if overtaken != height {
+				overtaken, since = height, now
+
+				continue
+			}
+
+			if now.Sub(since) < grace {
+				continue
+			}
+
+			logger.Warn("sequence overtaken by the chain head, canceling it", "height", height)
+
+			overtaken = 0
+
+			select {
+			case cancelCh <- height:
+			default: // one is pending already; the next look sends again if this height still stands
+			}
+		}
+	}
+}
+
+// overtakenIsCurrent tells a signal for the running sequence from a stale one for an earlier height:
+// the stale one must not cancel the live sequence.
+func overtakenIsCurrent(height, latestHeight uint64) bool {
+	return height == latestHeight+1
 }
 
 func (p *Polybft) waitForNPeers() bool {

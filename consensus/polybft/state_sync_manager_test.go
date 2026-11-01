@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/ory/dockertest"
 	"github.com/stretchr/testify/require"
 	"github.com/umbracle/ethgo"
 	"github.com/umbracle/ethgo/abi"
@@ -478,6 +479,13 @@ func TestStateSyncerManager_AddLog_BuildCommitments(t *testing.T) {
 
 func TestStateSyncerManager_EventTracker_Sync(t *testing.T) {
 	t.Parallel()
+
+	// testutil.DeployTestServer starts go-ethereum in a Docker container (dockertest) and
+	// fails the test when no Docker daemon is reachable. That is an environment dependency,
+	// not a behaviour of the state sync manager, so skip explicitly instead of failing.
+	if pool, err := dockertest.NewPool(""); err != nil || pool.Client.Ping() != nil {
+		t.Skip("Docker daemon is not reachable; this test needs a go-ethereum container")
+	}
 
 	vals := validator.NewTestValidators(t, 5)
 	s := newTestStateSyncManager(t, vals.GetValidator("0"), &mockRuntime{isActiveValidator: true})

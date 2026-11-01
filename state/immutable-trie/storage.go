@@ -3,11 +3,14 @@ package itrie
 import (
 	"fmt"
 	"sync"
+	"syscall"
 
 	"github.com/0xPolygon/polygon-edge/helper/hex"
 	"github.com/0xPolygon/polygon-edge/types"
 	"github.com/hashicorp/go-hclog"
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/filter"
+	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/umbracle/fastrlp"
 )
 
@@ -19,6 +22,21 @@ var (
 
 	// leveldb not found error message
 	levelDBNotFoundMsg = "leveldb: not found"
+)
+
+const (
+	// The state database holds tens of thousands of tables and every account or slot lookup walks
+	// several of them. goleveldb's defaults (8 MiB cache, 500 open tables, no bloom filter, seek
+	// compaction on) made a payout touching cold accounts take over 10 s to execute on a network
+	// volume (31.10). Sized for the 2 GB servers validators run on.
+	trieBlockCacheBytes  = 128 * opt.MiB
+	trieWriteBufferBytes = 16 * opt.MiB
+	trieBloomBitsPerKey  = 10
+	// trieOpenTablesWanted covers the current state; the process limit caps it below.
+	trieOpenTablesWanted = 60_000
+	// trieReservedHandles stays free for sockets, journals and the blockchain database.
+	trieReservedHandles = 2_048
+	trieMinOpenTables   = 500
 )
 
 // Batch is batch write interface
@@ -97,8 +115,36 @@ func (kv *KVStorage) Close() error {
 	return kv.db.Close()
 }
 
+// trieOpenTables returns how many tables may stay open under the process file limit.
+func trieOpenTables(fileLimit uint64) int {
+	if fileLimit < trieMinOpenTables+trieReservedHandles {
+		return trieMinOpenTables
+	}
+
+	if available := fileLimit - trieReservedHandles; available < trieOpenTablesWanted {
+		return int(available)
+	}
+
+	return trieOpenTablesWanted
+}
+
+func trieLevelDBOptions(fileLimit uint64) *opt.Options {
+	return &opt.Options{
+		BlockCacheCapacity:     trieBlockCacheBytes,
+		WriteBuffer:            trieWriteBufferBytes,
+		OpenFilesCacheCapacity: trieOpenTables(fileLimit),
+		Filter:                 filter.NewBloomFilter(trieBloomBitsPerKey),
+		DisableSeeksCompaction: true,
+	}
+}
+
 func NewLevelDBStorage(path string, logger hclog.Logger) (Storage, error) {
-	db, err := leveldb.OpenFile(path, nil)
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		return nil, fmt.Errorf("failed to read the open files limit: %w", err)
+	}
+
+	db, err := leveldb.OpenFile(path, trieLevelDBOptions(limit.Cur))
 	if err != nil {
 		return nil, err
 	}

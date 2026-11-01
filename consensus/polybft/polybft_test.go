@@ -324,9 +324,19 @@ func Test_GenesisPostHookFactory(t *testing.T) {
 			},
 		},
 		{
-			name:        "missing bridge configuration",
-			config:      &PolyBFTConfig{},
-			expectedErr: errMissingBridgeConfig,
+			// Aetherion: chain 100892 has no rootchain, so the genesis hook no longer rejects a
+			// missing bridge (upstream returned errMissingBridgeConfig) — it runs in standalone
+			// mode and skips bridge predicate initialization (see GenesisPostHookFactory).
+			// The native token is mintable, as on Aetherion: the non-mintable branch reads
+			// Bridge.RootNativeERC20Addr and needs a bridge.
+			name: "standalone mode (no bridge); mintable native token",
+			config: &PolyBFTConfig{
+				InitialValidatorSet: validators.GetParamValidators(),
+				EpochSize:           epochSize,
+				RewardConfig:        &RewardsConfig{WalletAmount: ethgo.Ether(1000)},
+				NativeTokenConfig:   &TokenConfig{Name: "Test Mintable", Symbol: "TEST_MNT", Decimals: 18, IsMintable: true},
+				MaxValidatorSetSize: maxValidators,
+			},
 		},
 	}
 

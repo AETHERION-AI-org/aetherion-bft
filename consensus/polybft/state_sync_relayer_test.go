@@ -9,6 +9,7 @@ import (
 	"github.com/0xPolygon/polygon-edge/consensus/polybft/contractsapi"
 	"github.com/0xPolygon/polygon-edge/types"
 	"github.com/hashicorp/go-hclog"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/umbracle/ethgo"
@@ -84,64 +85,78 @@ func TestStateSyncRelayer_FullWorkflow(t *testing.T) {
 
 	require.NoError(t, stateSyncRelayer.Init())
 
+	// The relayer processes events in its own goroutine (PostBlock only notifies it), so
+	// poll for each expected state instead of sleeping a fixed 2s: on a loaded machine one
+	// processEvents round (bolt write + SendTransaction) can outlast the sleep, and the test
+	// failed intermittently. Every state below is reached only after the test's own
+	// ProcessLog/PostBlock call, so polling cannot skip past an intermediate state.
+	const (
+		waitFor = 30 * time.Second
+		tick    = 50 * time.Millisecond
+	)
+
 	// post 1st block
 	require.NoError(t, stateSyncRelayer.ProcessLog(headers[0], convertLog(commitmentLogs[0]), nil))
 	require.NoError(t, stateSyncRelayer.ProcessLog(headers[0], convertLog(commitmentLogs[1]), nil))
 	require.NoError(t, stateSyncRelayer.PostBlock(&PostBlockRequest{}))
 
-	time.Sleep(time.Second * 2) // wait for some time
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		events, err := state.StateSyncStore.getAllAvailableEvents(0)
+		if !assert.NoError(c, err) || !assert.Len(c, events, 3) {
+			return
+		}
 
-	events, err := state.StateSyncStore.getAllAvailableEvents(0)
-
-	require.NoError(t, err)
-	require.Len(t, events, 3)
-	require.Equal(t, uint64(1), events[0].EventID)
-	require.True(t, events[0].SentStatus)
-	require.False(t, events[1].SentStatus)
-	require.False(t, events[2].SentStatus)
+		assert.Equal(c, uint64(1), events[0].EventID)
+		assert.True(c, events[0].SentStatus)
+		assert.False(c, events[1].SentStatus)
+		assert.False(c, events[2].SentStatus)
+	}, waitFor, tick)
 
 	// post 2nd block
 	require.NoError(t, stateSyncRelayer.ProcessLog(headers[1], convertLog(resultLogs[0]), nil))
 	require.NoError(t, stateSyncRelayer.ProcessLog(headers[1], convertLog(commitmentLogs[2]), nil))
 	require.NoError(t, stateSyncRelayer.PostBlock(&PostBlockRequest{}))
 
-	time.Sleep(time.Second * 2) // wait for some time
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		events, err := state.StateSyncStore.getAllAvailableEvents(0)
+		if !assert.NoError(c, err) || !assert.Len(c, events, 4) {
+			return
+		}
 
-	events, err = state.StateSyncStore.getAllAvailableEvents(0)
-
-	require.NoError(t, err)
-	require.Len(t, events, 4)
-	require.True(t, events[0].SentStatus)
-	require.Equal(t, uint64(2), events[0].EventID)
-	require.False(t, events[1].SentStatus)
-	require.False(t, events[2].SentStatus)
+		assert.True(c, events[0].SentStatus)
+		assert.Equal(c, uint64(2), events[0].EventID)
+		assert.False(c, events[1].SentStatus)
+		assert.False(c, events[2].SentStatus)
+	}, waitFor, tick)
 
 	// post 3rd block
 	require.NoError(t, stateSyncRelayer.ProcessLog(headers[2], convertLog(resultLogs[1]), nil))
 	require.NoError(t, stateSyncRelayer.PostBlock(&PostBlockRequest{}))
 
-	time.Sleep(time.Second * 2) // wait for some time
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		events, err := state.StateSyncStore.getAllAvailableEvents(0)
+		if !assert.NoError(c, err) || !assert.Len(c, events, 3) {
+			return
+		}
 
-	events, err = state.StateSyncStore.getAllAvailableEvents(0)
-
-	require.NoError(t, err)
-	require.Len(t, events, 3)
-	require.True(t, events[0].SentStatus)
-	require.Equal(t, uint64(3), events[0].EventID)
-	require.False(t, events[1].SentStatus)
+		assert.True(c, events[0].SentStatus)
+		assert.Equal(c, uint64(3), events[0].EventID)
+		assert.False(c, events[1].SentStatus)
+	}, waitFor, tick)
 
 	// post 4th block - will not provide result, so one more SendTransaction will be triggered
 	stateSyncRelayer.config.maxEventsPerBatch = 3 // send all 3 left events at once
 
 	require.NoError(t, stateSyncRelayer.PostBlock(&PostBlockRequest{}))
 
-	time.Sleep(time.Second * 2) // wait for some time
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		events, err := state.StateSyncStore.getAllAvailableEvents(0)
+		if !assert.NoError(c, err) || !assert.Len(c, events, 3) {
+			return
+		}
 
-	events, err = state.StateSyncStore.getAllAvailableEvents(0)
-
-	require.NoError(t, err)
-	require.Len(t, events, 3)
-	require.True(t, events[0].SentStatus && events[1].SentStatus && events[2].SentStatus)
+		assert.True(c, events[0].SentStatus && events[1].SentStatus && events[2].SentStatus)
+	}, waitFor, tick)
 
 	// post 5th block
 	require.NoError(t, stateSyncRelayer.ProcessLog(headers[4], convertLog(resultLogs[2]), nil))
@@ -149,19 +164,26 @@ func TestStateSyncRelayer_FullWorkflow(t *testing.T) {
 	require.NoError(t, stateSyncRelayer.ProcessLog(headers[4], convertLog(resultLogs[4]), nil))
 	require.NoError(t, stateSyncRelayer.PostBlock(&PostBlockRequest{}))
 
-	time.Sleep(time.Second * 2) // wait for some time
-
-	events, err = state.StateSyncStore.getAllAvailableEvents(0)
+	events, err := state.StateSyncStore.getAllAvailableEvents(0)
 
 	require.NoError(t, err)
 	require.Len(t, events, 0)
 
-	stateSyncRelayer.Close()
-	time.Sleep(time.Second)
+	// wait until the relayer goroutine has made every expected call (5 CurrentHeader,
+	// 4 SendTransaction) before closing it, instead of sleeping and hoping it is done
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		blockhainMock.AssertExpectations(collectLogT{c})
+		dummyTxRelayer.AssertExpectations(collectLogT{c})
+	}, waitFor, tick)
 
-	blockhainMock.AssertExpectations(t)
-	dummyTxRelayer.AssertExpectations(t)
+	stateSyncRelayer.Close()
 }
+
+// collectLogT adapts assert.CollectT to mock.TestingT (which also requires Logf),
+// so mock expectations can be polled with require.EventuallyWithT.
+type collectLogT struct{ *assert.CollectT }
+
+func (collectLogT) Logf(string, ...interface{}) {}
 
 type mockStateSyncProofRetriever struct {
 	fn func(uint64) (types.Proof, error)
