@@ -237,9 +237,18 @@ func (s *syncer) bulkSyncWithPeer(peerID peer.ID, peerLatestBlock uint64,
 			s.logger.Error("Failed to close stream: ", err)
 		}
 
-		// Stop monitoring the sync progression upon exit
-		s.syncProgression.StopProgression()
+		// Read what is still coming, so the stream's goroutines can end. They hand blocks over
+		// with plain sends; a return in the middle of a stream (a write or verify error, a timeout)
+		// left them blocked on a send for good, together with the stream they hold — two goroutines
+		// and a gRPC stream per failed sync attempt (13.11 review). The channel closes once the
+		// stream ends, which the close above brings about.
+		go drainBlocks(blockCh)
+
+		// Unsubscribe while the progression loop still reads: the blockchain pushes events under a
+		// read lock and blocks on a full subscription, and unsubscribing takes the write lock — a
+		// reader stopped first left a window where the two waited on each other (13.11 review).
 		s.blockchain.UnsubscribeEvents(subscription)
+		s.syncProgression.StopProgression()
 	}()
 
 	var lastReceivedNumber uint64
@@ -276,6 +285,12 @@ func (s *syncer) bulkSyncWithPeer(peerID peer.ID, peerLatestBlock uint64,
 		case <-time.After(s.blockTimeout):
 			return lastReceivedNumber, shouldTerminate, errTimeout
 		}
+	}
+}
+
+// drainBlocks reads a block channel until it is closed.
+func drainBlocks(blockCh <-chan *types.Block) {
+	for range blockCh {
 	}
 }
 

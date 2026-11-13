@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/0xPolygon/polygon-edge/blockchain"
 	"github.com/0xPolygon/polygon-edge/chain"
 	"github.com/0xPolygon/polygon-edge/consensus"
 	"github.com/0xPolygon/polygon-edge/consensus/polybft/contractsapi"
@@ -593,26 +594,11 @@ func (p *Polybft) startConsensusProtocol() {
 	newBlockSub := p.blockchain.SubscribeEvents()
 	defer p.blockchain.UnubscribeEvents(newBlockSub)
 
-	syncerBlockCh := make(chan struct{})
+	// Buffered and never waited on: see forwardSyncerBlocks.
+	syncerBlockCh := make(chan struct{}, 1)
 
-	go func() {
-		eventCh := newBlockSub.GetEventCh()
-
-		for {
-			select {
-			case <-p.closeCh:
-				return
-			case ev := <-eventCh:
-				// The blockchain notification system can eventually deliver
-				// stale block notifications. These should be ignored
-				if ev.Source == "syncer" && ev.NewChain[0].Number >= p.blockchain.CurrentHeader().Number {
-					p.logger.Info("sync block notification received", "block height", ev.NewChain[0].Number,
-						"current height", p.blockchain.CurrentHeader().Number)
-					syncerBlockCh <- struct{}{}
-				}
-			}
-		}
-	}()
+	go forwardSyncerBlocks(p.closeCh, newBlockSub.GetEventCh(),
+		func() uint64 { return p.blockchain.CurrentHeader().Number }, syncerBlockCh, p.logger)
 
 	var (
 		sequenceCh   <-chan struct{}
@@ -688,6 +674,49 @@ func (p *Polybft) startConsensusProtocol() {
 		}
 
 		p.logger.Debug("time to run the sequence", "seconds", time.Since(now))
+	}
+}
+
+// forwardSyncerBlocks tells the consensus loop that the syncer wrote a block, without ever waiting
+// for it.
+//
+// The send used to block on an unbuffered channel. While the loop sat in stopSequence, waiting for a
+// sequence whose runFin wanted the blockchain's write lock, this goroutine stopped draining its
+// subscription; five more syncer blocks filled it, and the syncer's next WriteBlock blocked in
+// dispatchEvent while holding that write lock — the sequence, the loop and the syncer all waiting on
+// each other, the node frozen until a restart. Signals now coalesce: the loop only needs to know
+// that one came, and it reads the head again itself.
+func forwardSyncerBlocks(
+	closeCh <-chan struct{},
+	eventCh <-chan *blockchain.Event,
+	head func() uint64,
+	syncerBlockCh chan<- struct{},
+	logger hclog.Logger,
+) {
+	for {
+		select {
+		case <-closeCh:
+			return
+		case ev := <-eventCh:
+			// The blockchain notification system can eventually deliver
+			// stale block notifications. These should be ignored
+			if ev == nil || ev.Source != "syncer" || len(ev.NewChain) == 0 {
+				continue
+			}
+
+			current := head()
+			if ev.NewChain[0].Number < current {
+				continue
+			}
+
+			logger.Info("sync block notification received", "block height", ev.NewChain[0].Number,
+				"current height", current)
+
+			select {
+			case syncerBlockCh <- struct{}{}:
+			default: // one is pending already; it covers this block too
+			}
+		}
 	}
 }
 
